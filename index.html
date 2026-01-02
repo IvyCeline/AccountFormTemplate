@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RMB账户表格识别（MVP）</title>
+  <style>
+    body { font-family: Arial, "Microsoft Yahei", sans-serif; margin: 20px; color:#222; }
+    input[type="text"], input[type="number"] { font-size:14px; padding:4px 6px; box-sizing:border-box; }
+    h1 { font-size:18px; margin-bottom:8px; }
+    textarea { width:100%; height:140px; font-size:14px; padding:8px; box-sizing:border-box; }
+    .controls { margin:10px 0; display:flex; gap:8px; align-items:center; }
+    button { padding:8px 12px; cursor:pointer; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; }
+    table th, table td { border:1px solid #999; padding:6px 8px; font-size:14px; vertical-align:middle; }
+    table th { background:#f5f5f5; text-align:left; }
+    .amount { text-align:right; }
+    .total-wrap { display:flex; justify-content:flex-end; margin-top:8px; }
+    .total-box { background:yellow; padding:10px 14px; min-width:200px; text-align:right; border:1px solid #999; }
+    .small { font-size:12px; color:#666; margin-top:6px; }
+    .hint { color:#b00; font-weight:600; }
+  </style>
+</head>
+<body>
+  <h1>RMB账户表格识别 — MVP</h1>
+
+  <div class="controls">
+    <label>模板（从同目录读取）： <strong>GQC RMB账户表格 (1).pdf</strong></label>
+    <button id="loadLocalBtn">加载本地模板并渲染</button>
+    <button id="parseBtn">解析并显示</button>
+    <button id="clearBtn">清空</button>
+    <button id="fillPdfBtn">填充 PDF 并下载</button>
+  </div>
+  <div style="margin-top:8px;">
+    <button id="ocrBtn">OCR 并解析（从已上传 PDF/图片）</button>
+    <span class="small" style="margin-left:8px;">提示：请先上传 PDF 或图片文件，然后点击此处进行 OCR（中文需加载语言包，首次会稍慢）。</span>
+  </div>
+  <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+    <button id="estimateCoordsBtn">估算坐标</button>
+    <button id="showCanvasBtn">显示模板预览</button>
+    <span class="small hint" id="coordHint" style="margin-left:8px;"></span>
+  </div>
+
+  <div>
+    <label for="inputText">粘贴或输入待识别文本（每笔一行，支持混合行，示例：6212251409000712228 黄国水 工商银行漳州龙江支行 500万）</label>
+    <textarea id="inputText" placeholder="示例：6212251409000712228 黄国水 工商银行漳州龙江支行 500万"></textarea>
+  </div>
+
+  <div class="small">说明：该页面为前端 MVP，使用内置规则解析账号/姓名/银行/金额并展示结果；后续会集成 OCR 与 PDF 填充。</div>
+
+  <table id="resultTable" aria-label="识别结果">
+    <thead>
+      <tr>
+        <th style="width:18%;">账户姓名</th>
+        <th style="width:42%;">银行地址</th>
+        <th style="width:25%;">账号</th>
+        <th style="width:15%;">金额</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  <div style="margin-top:8px;">
+    <button id="applyEditsBtn">更新表格并计算总额</button>
+    <button id="addRowBtn">新增空行</button>
+  </div>
+
+  <div class="total-wrap">
+    <div class="total-box" id="totalBox">￥0.00</div>
+  </div>
+  <!-- 用于 PDF.js 渲染的隐藏 canvas -->
+  <div style="margin-top:12px;">
+    <canvas id="pdfCanvas" style="border:1px solid #ddd; max-width:100%;"></canvas>
+  </div>
+  <div style="margin-top:8px;">
+    <div style="padding:6px 8px; background:#f7f7f7; border:1px solid #eee; max-width:760px;">
+      已固定坐标：col1=100, col2=240, col3=483, col4=799，startY=142，rowH=20；总金额框：X=799，Y=242；'￥'符号 X=675
+    </div>
+  </div>
+
+  <script>
+    // 固定坐标（canvas px，相对于上方预览 canvas）
+    const FIXED_COORDS = { col1:100, col2:240, col3:483, col4:799, startY:142, rowH:20 };
+    const SYMBOL_X_CANVAS = 675; // '￥' 在 canvas 上的固定 X
+    const TOTAL_X_CANVAS = 799;
+    const TOTAL_Y_CANVAS = 242;
+
+    // 格式化账号：去空格后每4位加空格
+    function formatAccountNumber(raw) {
+      const digits = (raw || '').toString().replace(/\s+/g, '');
+      if (!digits) return '';
+      return digits.replace(/(.{4})/g, '$1 ').trim();
+    }
+
+    // 银行名智能识别并保留支行地址（尽量保留支行后缀）
+    function normalizeBankName(raw) {
+      if (!raw) return '';
+      let s = String(raw || '');
+      // 去掉可能的前置标签或人名（如 "张三："、"姓名："、"开户行：" 等）
+      s = s.replace(/^(?:姓名|户名|开户名|收款人|收款户|联系人)[:：\s]*/i, '');
+      s = s.replace(/^[\u4e00-\u9fff]{2,6}[:：]\s*/i, ''); // 去掉前置姓名标签 e.g. 张炜：
+      // 清理多余符号和全角空格
+      s = s.replace(/[\u3000]/g, ' ').replace(/[\(\)\[\]{}「」『』“”"']/g, '').trim();
+      s = s.replace(/\s+/g, ' ');
+
+      const t = s.replace(/\s+/g, '');
+      // 常见银行简称映射到全称
+      let bankFull = '';
+      if (/建行|建设|ccb/i.test(t)) bankFull = '建设银行';
+      else if (/工行|工商|icbc/i.test(t)) bankFull = '工商银行';
+      else if (/农行|农业|abc/i.test(t)) bankFull = '农业银行';
+      else if (/中国银行|中行/i.test(t)) bankFull = '中国银行';
+      else if (/浦发|浦东发展银行|spd/i.test(t)) bankFull = '浦发银行';
+      else if (/民生|cmbc/i.test(t)) bankFull = '民生银行';
+      else if (/招商|招商银行|cmb/i.test(t)) bankFull = '招商银行';
+      else if (/邮储|邮政储蓄/i.test(t)) bankFull = '邮政储蓄银行';
+
+      // 尝试提取支行或地址部分（优先包含“支行”或“分行”的片段）
+      let branch = '';
+      const branchMatch = s.match(/([^\n\d]{0,80}(?:支行|分行|支行)[^\n\d]{0,80})/i);
+      if (branchMatch) branch = branchMatch[0].trim();
+
+      // 如果未找到明确支行，尝试从整体中分割出银行名称与剩余作为支行
+      if (!branch) {
+        // 若包含“银行”或“行”关键字，尝试分割第一个出现处
+        const idxYh = s.search(/银行|行/);
+        if (idxYh >= 0) {
+          // 找到“银行”完整词（优先），否则取“行”
+          const mYh = s.match(/^(.*?银行|.*?行)([\s\S]*)$/i);
+          if (mYh) {
+            const left = (mYh[1] || '').trim();
+            const right = (mYh[2] || '').trim();
+            if (!bankFull && /银行|行/i.test(left)) {
+              bankFull = left;
+              branch = right;
+            } else {
+              branch = right;
+            }
+          } else {
+            branch = s.replace(/(建设银行|建行|工商银行|工行|农业银行|农行|中国银行|中行|浦发|浦东发展银行|邮政储蓄|招商银行|民生银行)/i, '').trim();
+          }
+        } else {
+          branch = s;
+        }
+      }
+
+      // 清理 branch 前置标签
+      branch = branch.replace(/^(开户行[:：\s]*)/i, '').trim();
+      // 去掉 branch 中可能包含的个人姓名残留（如“张炜：浦发银行...”中的“张炜：”）
+      branch = branch.replace(/^[\u4e00-\u9fff]{2,6}[:：\s]*/i, '').trim();
+
+      // 若 branch 前缀包含 bankFull 或简称，去除重复
+      if (bankFull) {
+        if (branch.startsWith(bankFull)) branch = branch.slice(bankFull.length).trim();
+        branch = branch.replace(/^(建行|工行|农行|中行|浦发|招商|民生)/i, '').trim();
+      }
+
+      // 输出：bankFull + 空格 + branch（若 bankFull 可识别），否则将 s 按第一个“银行/行”分开返回并保证有空格间隔
+      if (bankFull) {
+        return (bankFull + (branch ? ' ' + branch : '')).trim();
+      }
+      // 若无法映射为常见简称，全量查找第一个“银行”或“行”并在其后加空格
+      const splitMatch = s.match(/^(.*?(?:银行|行))\s*(.*)$/i);
+      if (splitMatch) {
+        const left = splitMatch[1].trim();
+        const right = (splitMatch[2] || '').trim();
+        return (left + (right ? ' ' + right : '')).trim();
+      }
+      return s;
+    }
+
+    // 将金额文本解析为数字（元）
+    function parseAmountToNumber(raw) {
+      if (raw === undefined || raw === null) return 0;
+      let s = String(raw).replace(/[,￥\s]/g, '').toLowerCase();
+      // 处理形如 200w 或 200万
+      const m = s.match(/^([\d.]+)(w|万)?$/);
+      if (m) {
+        let v = parseFloat(m[1] || 0);
+        if (m[2]) v = v * 10000;
+        return isFinite(v) ? v : 0;
+      }
+      // 回退到直接数字解析
+      const n = parseFloat(s);
+      return isFinite(n) ? n : 0;
+    }
+
+    function formatAmountDisplay(n) {
+      const num = Number(n || 0);
+      return '￥' + num.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+
+    // 尝试从行文本提取：账号(长数字)、金额(含万/w)、银行(含行/银行/支行)、姓名(中文短词)
+    function parseLineToRecord(line) {
+      const original = line.trim();
+      if (!original) return null;
+      // 找到账号（要求至少16位数字，避免将短数字误识为账号）
+      const accMatch = original.match(/(\d{16,22})/);
+      const accountRaw = accMatch ? accMatch[1] : '';
+      // 找金额，支持 500万、200w、￥2,000,000、2000000、500,000.00 等
+      let amountRaw = '';
+      const amountMatch = original.match(/([\d,\.]+(?:万|w|W)?|[\d\.]+(?:万))/);
+      if (amountMatch) {
+        const candidate = amountMatch[0];
+        const digitsOnly = candidate.replace(/\D/g, '');
+        // 如果候选是长数字（可能为账号），忽略
+        if (digitsOnly.length < 16) {
+          const parsed = parseAmountToNumber(candidate);
+          // 若解析后金额超过阈值（>=10,000,000）则忽略（按规则金额不会超过千万级）
+          if (parsed < 10000000) amountRaw = candidate;
+        }
+      }
+      // 找银行（包含'行'或'银行'或'支行'关键词）
+      const bankMatch = original.match(/([^\s\d]{0,30}(?:银行|行)[^\d]{0,60}支行|[^\s\d]{0,60}(?:银行|行)[^\d]{0,60})/);
+      const bankRaw = bankMatch ? bankMatch[0].trim() : '';
+      // 找姓名：优先匹配中文 2-4 字，且不是银行关键字
+      let name = '';
+      const nameMatch = original.match(/[\u4e00-\u9fff]{1,6}/g);
+      if (nameMatch) {
+        // 过滤掉包含'银行'/'支行'等的片段
+        for (const nm of nameMatch) {
+          if (/银行|行|支行/.test(nm)) continue;
+          // 如果 nm 出现在银行Raw 里，跳过
+          if (bankRaw && bankRaw.indexOf(nm) !== -1) continue;
+          name = nm;
+          break;
+        }
+      }
+
+      // 若没有明确银行但有账号和姓名中间通常夹着银行，则尝试用剩余文本作为银行
+      let inferredBank = bankRaw;
+      if (!inferredBank) {
+        const leftover = original.replace(accountRaw, '').replace(amountRaw, '').replace(name, '').trim();
+        if (leftover) inferredBank = leftover;
+      }
+
+      const amountValue = parseAmountToNumber(amountRaw);
+
+      return {
+        name: name || '',
+        bank: normalizeBankName(inferredBank || ''),
+        account: formatAccountNumber(accountRaw || ''),
+        amountRaw: amountRaw || '',
+        amount: amountValue
+      };
+    }
+
+    // 更智能地以账号为中心解析整个输入文本，支持账号内含空格的情况
+    function parseInputToRecords(fullText) {
+      const text = fullText.replace(/\r\n/g, '\n');
+      // 使用能匹配带空格/连字符的长账号：至少16位数字，允许空格或横杠间隔（避免把短数字误识为账号/金额）
+      const accountRegex = /(?:\d[\s\-]?){16,22}/g;
+      const matches = [];
+      let m;
+      while ((m = accountRegex.exec(text)) !== null) {
+        const rawMatch = m[0];
+        // 清理只有短数字（如年份等）的噪音：去掉非数字后长度至少10
+        const digitsOnly = rawMatch.replace(/\D/g, '');
+        // 账号必须至少16位数字（更严格），且不重复
+        if (digitsOnly.length >= 16 && digitsOnly.length <= 22) {
+          matches.push({ raw: rawMatch, digits: digitsOnly, index: m.index, length: m[0].length });
+        }
+      }
+      // 去重：按纯数字字符串去重，保持出现顺序
+      const seen = new Set();
+      const uniqueMatches = [];
+      for (const mm of matches) {
+        if (!seen.has(mm.digits)) {
+          seen.add(mm.digits);
+          uniqueMatches.push(mm);
+        }
+      }
+      // 替换为去重后的列表
+      const finalMatches = uniqueMatches;
+      const records = [];
+      if (finalMatches.length > 0) {
+        // 先在全文中预提取候选项（姓名/银行/金额），带上位置，后续按距离分配以避免覆盖
+        const nameRegexGlobal = /[\u4e00-\u9fff]{2,6}/g;
+        const bankRegexGlobal = /[^\n\d]{2,80}(?:银行|支行|分行)[^\n\d]{0,80}/g;
+        const amountRegexGlobal = /(?<!\d)(?:￥\s*[\d,]+(?:\.\d+)?(?:万|w)?|[\d,]{1,}(?:\.\d+)?(?:万|w)?|[\d.]+(?:万|w)?)(?!\d)/gi;
+        const nameCandidates = [];
+        const bankCandidates = [];
+        const amountCandidates = [];
+
+        let mmc;
+        while ((mmc = nameRegexGlobal.exec(text)) !== null) {
+          nameCandidates.push({ text: mmc[0], index: mmc.index });
+        }
+        while ((mmc = bankRegexGlobal.exec(text)) !== null) {
+          bankCandidates.push({ text: mmc[0].replace(/[\(\)\[\]{}「」『』“”"']/g, '').trim(), index: mmc.index });
+        }
+        while ((mmc = amountRegexGlobal.exec(text)) !== null) {
+          const rawAmt = mmc[0].trim();
+          const digitsOnly = rawAmt.replace(/\D/g, '');
+          // 忽略长数字（可能为账号）
+          if (digitsOnly.length >= 16) continue;
+          // 忽略无单位且太短的数字（避免匹配到诸如“6227”这类账号片段）；如果带单位或逗号则优先保留
+          if (!/[万w￥,]/i.test(rawAmt) && digitsOnly.length < 5) continue;
+          amountCandidates.push({ text: rawAmt, index: mmc.index, priority: /万|w|￥/i.test(rawAmt) ? 2 : 1 });
+        }
+
+        const usedNameIdx = new Set();
+        const usedBankIdx = new Set();
+        const usedAmountIdx = new Set();
+
+        // 为每个账号分配最近且合适的姓名/银行/金额（贪心：按出现顺序分配最近可用候选）
+        for (let i = 0; i < finalMatches.length; i++) {
+          const mm = finalMatches[i];
+          // 取账号前后一定范围内的文本作为上下文（仍用于回退）
+          const ctxLeft = Math.max(0, mm.index - 240);
+          const ctxRight = Math.min(text.length, mm.index + mm.length + 240);
+          const ctx = text.slice(ctxLeft, ctxRight);
+
+          // 1) 寻找最近的金额候选（优先带单位/￥的）
+          let chosenAmount = '';
+          let bestDist = Infinity;
+          // first try high priority amounts
+          for (let j = 0; j < amountCandidates.length; j++) {
+            if (usedAmountIdx.has(j)) continue;
+            const a = amountCandidates[j];
+            const d = Math.abs(a.index - mm.index);
+            if (d < bestDist && d < 400) {
+              bestDist = d;
+              chosenAmount = a.text;
+            }
+          }
+          // 如果没有找到接近的，尝试在 ctx 中直接匹配
+          if (!chosenAmount) {
+            const localAmt = ctx.match(/(?<!\d)(?:￥\s*[\d,]+(?:\.\d+)?(?:万|w)?|[\d,]{1,}(?:\.\d+)?(?:万|w)?|[\d.]+(?:万|w)?)(?!\d)/g);
+            if (localAmt && localAmt.length) chosenAmount = localAmt[0].trim();
+          } else {
+            // 标记为已用
+            const usedIdx = amountCandidates.findIndex(a => a.text === chosenAmount && Math.abs(a.index - mm.index) === bestDist);
+            if (usedIdx >= 0) usedAmountIdx.add(usedIdx);
+          }
+
+          // 2) 寻找最近的银行候选
+          let chosenBank = '';
+          bestDist = Infinity;
+          for (let j = 0; j < bankCandidates.length; j++) {
+            if (usedBankIdx.has(j)) continue;
+            const b = bankCandidates[j];
+            const d = Math.abs(b.index - mm.index);
+            if (d < bestDist && d < 500) {
+              bestDist = d;
+              chosenBank = b.text;
+            }
+          }
+          if (!chosenBank) {
+            // 回退：从 ctx 中尝试提取包含'银行'或'支行'的片段
+            const localBank = ctx.match(/([^\n\d]{0,80}(?:银行|支行)[^\n\d]{0,80})/);
+            if (localBank) chosenBank = localBank[0].replace(/[\(\)\[\]{}「」『』“”"']/g, '').trim();
+          } else {
+            const usedIdx = bankCandidates.findIndex(b => b.text === chosenBank && Math.abs(b.index - mm.index) === bestDist);
+            if (usedIdx >= 0) usedBankIdx.add(usedIdx);
+          }
+
+          // 3) 寻找最近的姓名候选（优先带冒号的形式）
+          let chosenName = '';
+          // 优先查找形如 "张炜：" 的标签（在账号附近）
+          const nameLabelMatch = text.slice(Math.max(0, mm.index - 30), mm.index + mm.length + 10).match(/([\u4e00-\u9fff]{2,4})[:：]/);
+          if (nameLabelMatch) {
+            chosenName = nameLabelMatch[1];
+          } else {
+            bestDist = Infinity;
+            for (let j = 0; j < nameCandidates.length; j++) {
+              if (usedNameIdx.has(j)) continue;
+              const n = nameCandidates[j];
+              if (/银行|支行|开户|开户名/.test(n.text)) continue;
+              const d = Math.abs(n.index - mm.index);
+              if (d < bestDist && d < 400) {
+                bestDist = d;
+                chosenName = n.text;
+              }
+            }
+            if (chosenName) {
+              const usedIdx = nameCandidates.findIndex(n => n.text === chosenName && Math.abs(n.index - mm.index) === bestDist);
+              if (usedIdx >= 0) usedNameIdx.add(usedIdx);
+            }
+          }
+
+          // 最后回退到 ctx 中的简单抽取（以防上面都失败）
+          if (!chosenBank) {
+            const bankMatch = ctx.match(/([^\n\d]{0,80}(?:银行|支行)[^\n\d]{0,80})/);
+            if (bankMatch) chosenBank = bankMatch[0].replace(/[\(\)\[\]{}「」『』“”"']/g, '').trim();
+          }
+          if (!chosenName) {
+            const nm = ctx.match(/[\u4e00-\u9fff]{2,6}/);
+            if (nm) chosenName = nm[0];
+          }
+
+          // 防止重复记录相同账号
+          if (records.some(r => r.account.replace(/\s+/g,'') === formatAccountNumber(mm.digits).replace(/\s+/g,''))) {
+            continue;
+          }
+          records.push({
+            name: chosenName || '',
+            bank: normalizeBankName(chosenBank || ''),
+            account: formatAccountNumber(mm.digits),
+            amountRaw: chosenAmount || '',
+            amount: parseAmountToNumber(chosenAmount || '')
+          });
+        }
+      } else {
+        // 未找到账号，回退到按行解析（保持兼容旧逻辑）
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        for (const line of lines) {
+          // 过滤掉仅为标签的行，例如 "姓名：" "卡号：" 等
+          if (/^(姓名|卡号|开户行|账号|金额)[:：\s]*$/i.test(line)) continue;
+          const rec = parseLineToRecord(line);
+          if (rec) records.push(rec);
+        }
+      }
+
+      // 如果只找到一个账号但文本中存在额外银行/姓名/金额信息（非在同一上下文），尝试从全文中提取并填充空白字段
+      if (records.length === 1) {
+        const full = text;
+        if (!records[0].bank) {
+          const bankMatch = full.match(/([^\n\d]{0,60}(?:银行|支行)[^\n\d]{0,60})/);
+          if (bankMatch) records[0].bank = normalizeBankName(bankMatch[0].trim());
+        }
+        if (!records[0].name) {
+          const nameMatch = full.match(/[\u4e00-\u9fff]{2,6}/);
+          if (nameMatch) {
+            const nm = nameMatch[0];
+            if (!['姓名','卡号','开户行','开户名','账号','金额'].includes(nm)) records[0].name = nm;
+          }
+        }
+        if (!records[0].amountRaw) {
+          const amountCandidates = full.match(/(￥\s*[\d,]+(?:\.\d+)?(?:万|w)?|[\d,]{1,}(?:\.\d+)?(?:万|w)?|[\d.]+(?:万|w))/g) || [];
+          for (const cand of amountCandidates) {
+            const digitsOnly = cand.replace(/\D/g, '');
+            if (digitsOnly.length >= 16) continue;
+            if (!/[万w￥,]/i.test(cand) && digitsOnly.length < 5) continue;
+            records[0].amountRaw = cand.trim();
+            records[0].amount = parseAmountToNumber(records[0].amountRaw);
+            break;
+          }
+        }
+      }
+
+      return records;
+    }
+
+    // 把解析结果渲染为可编辑表格，用户可在表格中修改再点击“更新表格并计算总额”
+    function renderResultsEditable(records) {
+      const tbody = document.querySelector('#resultTable tbody');
+      tbody.innerHTML = '';
+      for (const r of records) {
+        const tr = document.createElement('tr');
+        // 姓名
+        const tdName = document.createElement('td');
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.value = r.name || '';
+        nameInput.style.width = '100%';
+        nameInput.dataset.field = 'name';
+        tdName.appendChild(nameInput);
+        // 银行
+        const tdBank = document.createElement('td');
+        const bankInput = document.createElement('input');
+        bankInput.type = 'text';
+        bankInput.value = r.bank || '';
+        bankInput.style.width = '100%';
+        bankInput.dataset.field = 'bank';
+        tdBank.appendChild(bankInput);
+        // 账号
+        const tdAcc = document.createElement('td');
+        const accInput = document.createElement('input');
+        accInput.type = 'text';
+        accInput.value = r.account || '';
+        accInput.style.width = '100%';
+        accInput.dataset.field = 'account';
+        tdAcc.appendChild(accInput);
+        // 金额
+        const tdAmount = document.createElement('td');
+        tdAmount.className = 'amount';
+        const amtInput = document.createElement('input');
+        amtInput.type = 'text';
+        amtInput.value = r.amountRaw ? formatAmountDisplay(r.amount) : '';
+        amtInput.style.width = '100%';
+        amtInput.dataset.field = 'amount';
+        tdAmount.appendChild(amtInput);
+
+        tr.appendChild(tdName);
+        tr.appendChild(tdBank);
+        tr.appendChild(tdAcc);
+        tr.appendChild(tdAmount);
+        tbody.appendChild(tr);
+      }
+      recalcTotalFromTable();
+      // 在 canvas 上绘制解析结果的文字覆盖（便于预览对齐）
+      drawOverlayFromTable();
+    }
+
+    // 在预览 canvas 上绘制表格文字覆盖，使用用户在输入框中的坐标
+    function drawOverlayFromTable() {
+      const canvas = document.getElementById('pdfCanvas');
+      if (!canvas || canvas.width === 0) return;
+      const ctx = canvas.getContext('2d');
+      // 使用固定坐标，先恢复基础模板画面（若保存了基础图像数据）
+      if (window.__baseCanvasImageData && window.__baseCanvasImageData.width === canvas.width && window.__baseCanvasImageData.height === canvas.height) {
+        ctx.putImageData(window.__baseCanvasImageData, 0, 0);
+      } else {
+        // 若没有保存则清空画布（即覆盖）
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      const rows = Array.from(document.querySelectorAll('#resultTable tbody tr'));
+      const col1X = FIXED_COORDS.col1;
+      const col2X = FIXED_COORDS.col2;
+      const col3X = FIXED_COORDS.col3;
+      const col4X = FIXED_COORDS.col4;
+      const startYCanvas = FIXED_COORDS.startY;
+      const rowHeightCanvas = FIXED_COORDS.rowH;
+      const symbolX = SYMBOL_X_CANVAS;
+      // draw overlay
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.95)';
+      for (let i = 0; i < rows.length; i++) {
+        const tr = rows[i];
+        const name = (tr.querySelector('input[data-field="name"]') || { value: '' }).value || '';
+        const bank = (tr.querySelector('input[data-field="bank"]') || { value: '' }).value || '';
+        const acc = (tr.querySelector('input[data-field="account"]') || { value: '' }).value || '';
+        const amtRaw = (tr.querySelector('input[data-field="amount"]') || { value: '' }).value || '';
+        const y = startYCanvas + i * rowHeightCanvas;
+        // 姓名/银行/账号加粗显示
+        ctx.font = 'bold 14px SimSun, "Microsoft Yahei", serif';
+        ctx.fillText(name, col1X, y);
+        ctx.fillText(bank, col2X, y);
+        ctx.fillText(acc, col3X, y);
+        // 金额分开放置：符号固定，数字右对齐到 col4X
+        const amtText = String(amtRaw || '').replace('￥', '').trim();
+        // 先绘制 '￥' 符号（使用相同字体，但保持视觉一致）
+        ctx.font = '14px SimSun, "Microsoft Yahei", serif';
+        ctx.fillText('￥', symbolX, y);
+        // 再绘制金额数字（常规字体）
+        ctx.font = '14px Calibri, "Microsoft Yahei", serif';
+        const metrics = ctx.measureText(amtText);
+        const numericX = col4X - metrics.width;
+        ctx.fillText(amtText, numericX, y);
+      }
+      // 绘制总金额到黄色框位置（固定）
+      const totalText = document.getElementById('totalBox').textContent || '￥0.00';
+      // 恢复底色不覆盖黄色框显示（在预览上直接绘制）
+      ctx.font = '14px Calibri, "Microsoft Yahei", serif';
+      ctx.fillStyle = 'rgba(0,0,0,0.95)';
+      // 绘制总额符号和数字（符号与行内对齐）
+      ctx.font = '14px SimSun, "Microsoft Yahei", serif';
+      ctx.fillText('￥', SYMBOL_X_CANVAS, TOTAL_Y_CANVAS);
+      ctx.font = '14px Calibri, "Microsoft Yahei", serif';
+      const totalNum = String(totalText || '').replace('￥', '').trim();
+      const totalMetrics = ctx.measureText(totalNum);
+      ctx.fillText(totalNum, TOTAL_X_CANVAS - totalMetrics.width, TOTAL_Y_CANVAS);
+      ctx.restore();
+    }
+
+    function recalcTotalFromTable() {
+      const rows = Array.from(document.querySelectorAll('#resultTable tbody tr'));
+      let total = 0;
+      for (const tr of rows) {
+        const amtInput = tr.querySelector('input[data-field="amount"]');
+        const raw = amtInput ? amtInput.value : '';
+        const n = parseAmountToNumber(String(raw).replace(/￥/g, ''));
+        total += Number(n || 0);
+      }
+      document.getElementById('totalBox').textContent = formatAmountDisplay(total);
+    }
+
+    document.getElementById('parseBtn').addEventListener('click', () => {
+      const txt = document.getElementById('inputText').value || '';
+      const records = parseInputToRecords(txt);
+      renderResultsEditable(records);
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      document.getElementById('inputText').value = '';
+      document.querySelector('#resultTable tbody').innerHTML = '';
+      document.getElementById('totalBox').textContent = '￥0.00';
+    });
+
+    // “更新表格并计算总额”按钮
+    document.getElementById('applyEditsBtn').addEventListener('click', () => {
+      // 遍历表格，把用户修改的值规范化（账号格式/金额格式化）
+      const rows = Array.from(document.querySelectorAll('#resultTable tbody tr'));
+      for (const tr of rows) {
+        const accInput = tr.querySelector('input[data-field="account"]');
+        if (accInput) accInput.value = formatAccountNumber(accInput.value);
+        const amtInput = tr.querySelector('input[data-field="amount"]');
+        if (amtInput) {
+          // 解析并格式化为￥#,###.00 显示
+          const n = parseAmountToNumber(String(amtInput.value));
+          amtInput.value = n ? formatAmountDisplay(n) : '';
+        }
+        // 银行名智能识别并修正
+        const bankInput = tr.querySelector('input[data-field="bank"]');
+        if (bankInput && bankInput.value) bankInput.value = normalizeBankName(bankInput.value);
+      }
+      recalcTotalFromTable();
+    });
+
+    document.getElementById('addRowBtn').addEventListener('click', () => {
+      renderResultsEditable([].slice.call(document.querySelectorAll('#resultTable tbody tr')).map(tr => {
+        return {
+          name: tr.querySelector('input[data-field="name"]').value,
+          bank: tr.querySelector('input[data-field="bank"]').value,
+          account: tr.querySelector('input[data-field="account"]').value,
+          amountRaw: tr.querySelector('input[data-field="amount"]').value,
+          amount: parseAmountToNumber(tr.querySelector('input[data-field="amount"]').value)
+        };
+      }).concat([{ name:'', bank:'', account:'', amountRaw:'', amount:0 }]));
+    });
+
+    // PDF 上传占位（后续将使用 pdf-lib 填充模板）
+    // 移除上传交互；改为从同目录加载模板文件（GQC RMB账户表格 (1).pdf）
+    let localTemplateBlob = null;
+    async function loadLocalTemplate() {
+      try {
+        const resp = await fetch('GQC RMB账户表格 (1).pdf');
+        if (!resp.ok) throw new Error('无法加载本地模板: ' + resp.status);
+        const ab = await resp.arrayBuffer();
+        localTemplateBlob = new Blob([ab], { type: 'application/pdf' });
+        await renderPdfPreview(localTemplateBlob);
+        document.getElementById('coordHint').textContent = '已加载本地模板，已渲染到预览。';
+      } catch (e) {
+        console.error(e);
+        document.getElementById('coordHint').textContent = '加载本地模板失败：' + e.message;
+      }
+    }
+    document.getElementById('loadLocalBtn').addEventListener('click', loadLocalTemplate);
+
+    // PDF 填充并下载（使用 pdf-lib）
+    // 依赖 CDN: PDFLib (pdf-lib)
+    async function fillPdfAndDownload() {
+      const inputFile = localTemplateBlob;
+      // 读取表格内当前解析结果
+      const rows = Array.from(document.querySelectorAll('#resultTable tbody tr'));
+      const records = rows.map(tr => {
+        // 从可编辑输入中读取值（兼容输入框）
+        const nameEl = tr.querySelector('input[data-field="name"]');
+        const bankEl = tr.querySelector('input[data-field="bank"]');
+        const accEl = tr.querySelector('input[data-field="account"]');
+        const amtEl = tr.querySelector('input[data-field="amount"]');
+        const name = nameEl ? nameEl.value.trim() : (tr.children[0] ? tr.children[0].textContent.trim() : '');
+        const bank = bankEl ? bankEl.value.trim() : (tr.children[1] ? tr.children[1].textContent.trim() : '');
+        const account = accEl ? accEl.value.trim() : (tr.children[2] ? tr.children[2].textContent.trim() : '');
+        const amount = amtEl ? amtEl.value.trim() : (tr.children[3] ? tr.children[3].textContent.trim() : '');
+        return { name, bank, account, amount };
+      });
+
+      let pdfBytes;
+      if (inputFile) {
+        pdfBytes = await inputFile.arrayBuffer();
+      } else {
+        // 若未上传模板，则创建一个空白 A4 页作为模板
+        const blankDoc = await PDFLib.PDFDocument.create();
+        const page = blankDoc.addPage([595.28, 841.89]); // A4 pt
+        const helv = await blankDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+        page.drawText('RMB账户表格（空白模板）', { x: 40, y: 800, size: 14, font: helv });
+        pdfBytes = await blankDoc.save();
+      }
+
+      const pdfDoc = await PDFLib.PDFDocument.load(pdfBytes);
+      const pages = pdfDoc.getPages();
+      const page = pages[0];
+      const { width, height } = page.getSize();
+      // 嵌入或使用用户上传的字体
+      let simsunFont = null;
+      let calibriFont = null;
+      const simsunInputEl = document.getElementById('simsunInput');
+      const calibriInputEl = document.getElementById('calibriInput');
+      const simsunFile = simsunInputEl && simsunInputEl.files && simsunInputEl.files[0];
+      const calibriFile = calibriInputEl && calibriInputEl.files && calibriInputEl.files[0];
+      try {
+        if (simsunFile) {
+          const buf = await simsunFile.arrayBuffer();
+          simsunFont = await pdfDoc.embedFont(buf);
+        }
+      } catch (e) {
+        console.warn('嵌入 SimSun 失败，回退到内置字体', e);
+      }
+      // 若用户未通过文件输入上传字体，尝试从相对路径加载常见字体文件名（便于 GitHub Pages 部署时直接嵌入）
+      if (!simsunFont) {
+        const possibleSimsun = ['SimSun-Bold.ttf', 'simsun-bold.ttf', 'simsun.ttf'];
+        for (const name of possibleSimsun) {
+          try {
+            const resp = await fetch(name);
+            if (resp.ok) {
+              const buf = await resp.arrayBuffer();
+              simsunFont = await pdfDoc.embedFont(buf);
+              console.log('从相对路径嵌入 SimSun:', name);
+              break;
+            }
+          } catch (e) { /* ignore */ }
+        }
+      }
+      try {
+        if (calibriFile) {
+          const buf = await calibriFile.arrayBuffer();
+          calibriFont = await pdfDoc.embedFont(buf);
+        }
+      } catch (e) {
+        console.warn('嵌入 Calibri 失败，回退到内置字体', e);
+      }
+      if (!calibriFont) {
+        const possibleCalibri = ['calibri.ttf', 'calibri-regular.ttf', 'Calibri.ttf'];
+        for (const name of possibleCalibri) {
+          try {
+            const resp = await fetch(name);
+            if (resp.ok) {
+              const buf = await resp.arrayBuffer();
+              calibriFont = await pdfDoc.embedFont(buf);
+              console.log('从相对路径嵌入 Calibri:', name);
+              break;
+            }
+          } catch (e) { /* ignore */ }
+        }
+      }
+      const helvetica = simsunFont || (await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica));
+      const amountFont = calibriFont || (await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica));
+
+      // 使用固定 canvas 坐标并转换到 PDF pt（使用 FIXED_COORDS 与 SYMBOL_X_CANVAS 等常量）
+      const canvas = document.getElementById('pdfCanvas');
+      const canvasWidth = canvas.width || 0;
+      const canvasHeight = canvas.height || 0;
+      const col1X = FIXED_COORDS.col1;
+      const col2X = FIXED_COORDS.col2;
+      const col3X = FIXED_COORDS.col3;
+      const col4X = FIXED_COORDS.col4;
+      const startYCanvas = FIXED_COORDS.startY;
+      const rowHeightCanvas = FIXED_COORDS.rowH;
+      const symbolXCanvas = SYMBOL_X_CANVAS;
+      const totalXCanvas = TOTAL_X_CANVAS;
+      const totalYCanvas = TOTAL_Y_CANVAS;
+
+      // 如果有 canvas 大小信息，则按比例映射到 PDF 点坐标
+      let col1, col2, col3, col4, startY, rowHeight;
+      let mappedSymbolX, mappedTotalX, mappedTotalY;
+      if (canvasWidth > 0 && canvasHeight > 0) {
+        const scaleX = width / canvasWidth;
+        const scaleY = height / canvasHeight;
+        col1 = col1X * scaleX;
+        col2 = col2X * scaleX;
+        col3 = col3X * scaleX;
+        col4 = col4X * scaleX;
+        // startYCanvas 是从上向下的 px，PDF 的 y 从底部开始，因此转换为 height - startYCanvas*scaleY
+        startY = height - startYCanvas * scaleY;
+        rowHeight = rowHeightCanvas * scaleY;
+        mappedSymbolX = symbolXCanvas * scaleX;
+        mappedTotalX = totalXCanvas * scaleX;
+        mappedTotalY = height - totalYCanvas * scaleY;
+      } else {
+        const leftMargin = 40;
+        col1 = leftMargin;
+        col2 = leftMargin + width * 0.18 + 8;
+        col3 = col2 + width * 0.42 + 8;
+        col4 = col3 + width * 0.25 + 8;
+        startY = height - 160;
+        rowHeight = 22;
+        mappedSymbolX = col4 - 120;
+        mappedTotalX = col4;
+        mappedTotalY = 80;
+      }
+
+      // 写入每条记录（超出页面则会继续写在同一页底部）
+      for (let i = 0; i < records.length; i++) {
+        const r = records[i];
+        const y = startY - i * rowHeight;
+        if (y < 40) break; // 简单保护：不跨页写入（可后续扩展）
+        // 名称/银行/账号 使用 SimSun-Bold（若有），保持加粗
+        const boldFont = simsunFont || (await pdfDoc.embedFont(PDFLib.StandardFonts.HelveticaBold));
+        const numFont = amountFont || (await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica));
+        page.drawText(r.name || '', { x: col1, y, size: 12, font: boldFont, color: PDFLib.rgb(0,0,0) });
+        page.drawText(r.bank || '', { x: col2, y, size: 12, font: boldFont, color: PDFLib.rgb(0,0,0) });
+        page.drawText(r.account || '', { x: col3, y, size: 12, font: boldFont, color: PDFLib.rgb(0,0,0) });
+        // 金额分开放置：先绘制符号，再右对齐数字部分到 col4
+        const amtStr = (r.amount || '').replace('￥', '').trim();
+        page.drawText('￥', { x: mappedSymbolX, y, size: 12, font: boldFont, color: PDFLib.rgb(0,0,0) });
+        const numericWidth = numFont.widthOfTextAtSize(amtStr, 12);
+        const numericX = col4 - numericWidth;
+        page.drawText(amtStr, { x: numericX, y, size: 12, font: numFont, color: PDFLib.rgb(0,0,0) });
+      }
+
+      // 写入总金额到黄色框固定位置（使用固定坐标映射）
+      const totalText = document.getElementById('totalBox').textContent || '￥0.00';
+      const totalNum = String(totalText).replace('￥', '').trim();
+      const boldFont = simsunFont || (await pdfDoc.embedFont(PDFLib.StandardFonts.HelveticaBold));
+      const normalFont = amountFont || (await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica));
+      page.drawText('￥', { x: mappedSymbolX, y: mappedTotalY, size: 14, font: boldFont, color: PDFLib.rgb(0,0,0) });
+      const totalNumericWidth = normalFont.widthOfTextAtSize(totalNum, 14);
+      page.drawText(totalNum, { x: mappedTotalX - totalNumericWidth, y: mappedTotalY, size: 14, font: normalFont, color: PDFLib.rgb(0,0,0) });
+
+      const modifiedPdfBytes = await pdfDoc.save();
+      const blob = new Blob([modifiedPdfBytes], { type: 'application/pdf' });
+      const filename = 'filled_rmb_accounts.pdf';
+      // 使用浏览器原生方式下载
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    // 等待 pdf-lib 脚本加载后绑定事件
+    async function ensurePdfLibLoaded() {
+      if (window.PDFLib) return;
+      return new Promise((resolve) => {
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/pdf-lib/dist/pdf-lib.min.js';
+        s.onload = () => resolve();
+        s.onerror = () => {
+          alert('加载 pdf-lib 失败，PDF 填充不可用');
+          resolve();
+        };
+        document.head.appendChild(s);
+      });
+    }
+
+    document.getElementById('fillPdfBtn').addEventListener('click', async () => {
+      await ensurePdfLibLoaded();
+      await fillPdfAndDownload();
+    });
+
+    // ---------------------
+    // OCR 集成（PDF.js + Tesseract.js）
+    // ---------------------
+    function ensurePdfJsLoaded() {
+      if (window.pdfjsLib) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js';
+        s.onload = () => {
+          // 设置 worker 路径
+          try {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+          } catch (e) {}
+          resolve();
+        };
+        s.onerror = () => reject(new Error('加载 pdf.js 失败'));
+        document.head.appendChild(s);
+      });
+    }
+
+    function ensureTesseractLoaded() {
+      if (window.Tesseract) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/tesseract.js@v4.0.2/dist/tesseract.min.js';
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error('加载 Tesseract.js 失败'));
+        document.head.appendChild(s);
+      });
+    }
+
+    document.getElementById('ocrBtn').addEventListener('click', async () => {
+      if (!localTemplateBlob) {
+        alert('请先点击“加载本地模板并渲染”以加载同目录模板，然后再执行 OCR。');
+        return;
+      }
+      try {
+        await ensurePdfJsLoaded();
+      } catch (e) {
+        alert('无法加载 PDF 渲染库：' + e.message);
+        return;
+      }
+
+      // 使用已加载的本地模板（或图片）进行渲染到 canvas
+      const arrayBuffer = await localTemplateBlob.arrayBuffer();
+      const isPdf = true;
+      const canvas = document.getElementById('pdfCanvas');
+      const ctx = canvas.getContext('2d');
+      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+      const pdf = await loadingTask.promise;
+      const page = await pdf.getPage(1);
+      const viewport = page.getViewport({ scale: 2.0 });
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      // 加载 Tesseract 并执行识别（优先尝试中文 chi_sim，失败回退到英文）
+      try {
+        await ensureTesseractLoaded();
+      } catch (e) {
+        alert('无法加载 OCR 库：' + e.message);
+        return;
+      }
+
+      const worker = Tesseract.createWorker({
+        logger: m => console.log('tesseract', m)
+      });
+      await worker.load();
+      // 尝试加载中文语言包；如失败则使用英文
+      let lang = 'chi_sim';
+      try {
+        await worker.loadLanguage(lang);
+        await worker.initialize(lang);
+      } catch (err) {
+        console.warn('加载 chi_sim 失败，回退到 eng：', err);
+        lang = 'eng';
+        await worker.loadLanguage(lang);
+        await worker.initialize(lang);
+      }
+
+      const { data: { text } } = await worker.recognize(canvas);
+      await worker.terminate();
+
+      // 将识别文本放入输入框并触发解析（保留原始文本到 preview 供编辑）
+      document.getElementById('inputText').value = text;
+      document.getElementById('parseBtn').click();
+      alert('OCR 完成，识别文本已填入并开始解析。请在下方的可编辑表格中校正结果后再导出。');
+    });
+    // 渲染 PDF 预览到 canvas，便于用户微调坐标
+    async function renderPdfPreview(file) {
+      await ensurePdfJsLoaded();
+      const arrayBuffer = await file.arrayBuffer();
+      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      const canvas = document.getElementById('pdfCanvas');
+      const ctx = canvas.getContext('2d');
+      if (isPdf) {
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const pdf = await loadingTask.promise;
+        const page = await pdf.getPage(1);
+        const viewport0 = page.getViewport({ scale: 1.0 });
+        const desiredWidth = Math.min(1000, window.innerWidth - 100);
+        const scale = desiredWidth / viewport0.width;
+        const viewport = page.getViewport({ scale });
+        canvas.width = Math.round(viewport.width);
+        canvas.height = Math.round(viewport.height);
+        canvas.style.display = 'block';
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        try { window.__baseCanvasImageData = ctx.getImageData(0,0,canvas.width,canvas.height); } catch (e) { /* ignore */ }
+      } else {
+        const imgBlob = new Blob([arrayBuffer], { type: file.type });
+        const img = new Image();
+        img.src = URL.createObjectURL(imgBlob);
+        await new Promise(res => img.onload = res);
+        const scale = Math.min(1.5, (window.innerWidth - 100) / img.width);
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        try { window.__baseCanvasImageData = ctx.getImageData(0,0,canvas.width,canvas.height); } catch (e) { /* ignore */ }
+        URL.revokeObjectURL(img.src);
+      }
+      document.getElementById('coordHint').textContent = '已渲染模板，坐标已固定为模板默认值（不可修改）。';
+    }
+    document.getElementById('estimateCoordsBtn').addEventListener('click', () => {
+      document.getElementById('coordHint').textContent = '坐标为固定模板值：col1=100, col2=240, col3=483, col4=799，startY=142，rowH=20';
+    });
+
+    document.getElementById('showCanvasBtn').addEventListener('click', () => {
+      const canvas = document.getElementById('pdfCanvas');
+      canvas.scrollIntoView({ behavior: 'smooth' });
+    });
+  </script>
+</body>
+</html>
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>project_template_react</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css"
+      crossorigin="anonymous"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
+
