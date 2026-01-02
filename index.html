@@ -118,6 +118,29 @@
       let branch = '';
       const branchMatch = s.match(/([^\n\d]{0,80}(?:支行|分行|支行)[^\n\d]{0,80})/i);
       if (branchMatch) branch = branchMatch[0].trim();
+      // 处理像“农行义乌向阳支行”或“农业银行义乌向阳支行”这类无空格写法：
+      // 若 branch 未明确或包含银行简称，则尝试捕获简称后面的支行名
+      if ((!branch || /^(建行|工行|农行|中行|浦发|招商|民生|邮储)/i.test(branch)) && !/支行|分行/i.test(branch)) {
+        const alt = s.match(/(?:((?:建行|工行|农行|中行|浦发|招商|民生|邮储|建设银行|工商银行|农业银行|中国银行|浦东发展银行|招商银行|民生银行|邮政储蓄))\s*([\u4e00-\u9fff\w\s]{1,80}?(?:支行|分行)))/i);
+        if (alt) {
+          // alt[1] 可能是简称或全称，alt[2] 是支行名
+          const prefix = (alt[1] || '').trim();
+          const branchPart = (alt[2] || '').trim();
+          branch = branchPart;
+          // 若尚未识别到全称 bankFull，则根据 prefix 映射
+          if (!bankFull) {
+            const tprefix = prefix.replace(/\s+/g, '');
+            if (/建行|建设|ccb/i.test(tprefix)) bankFull = '建设银行';
+            else if (/工行|工商|icbc/i.test(tprefix)) bankFull = '工商银行';
+            else if (/农行|农业|abc/i.test(tprefix)) bankFull = '农业银行';
+            else if (/中国银行|中行/i.test(tprefix)) bankFull = '中国银行';
+            else if (/浦发|浦东发展银行|spd/i.test(tprefix)) bankFull = '浦发银行';
+            else if (/招商|招商银行|cmb/i.test(tprefix)) bankFull = '招商银行';
+            else if (/民生|民生银行|cmbc/i.test(tprefix)) bankFull = '民生银行';
+            else if (/邮储|邮政储蓄/i.test(tprefix)) bankFull = '邮政储蓄银行';
+          }
+        }
+      }
 
       // 如果未找到明确支行，尝试从整体中分割出银行名称与剩余作为支行
       if (!branch) {
@@ -142,6 +165,26 @@
           branch = s;
         }
       }
+      // 如果 branch 非常短或只包含“支行”，尝试严格匹配“简称+支行名”模式来提取完整支行名
+      if (!branch || /^支行$|^分行$/i.test(branch) || branch.length <= 3) {
+        const strictAlt = s.match(/(?:\b(建行|工行|农行|中行|浦发|招商|民生|邮储|建设银行|工商银行|农业银行|中国银行|浦东发展银行|招商银行|民生银行|邮政储蓄)\b)\s*([\u4e00-\u9fff\w\s]{1,80}?(?:支行|分行))/i);
+        if (strictAlt) {
+          const prefix = (strictAlt[1] || '').trim();
+          const branchPart = (strictAlt[2] || '').trim();
+          branch = branchPart;
+          if (!bankFull) {
+            const tprefix = prefix.replace(/\s+/g, '');
+            if (/建行|建设|ccb/i.test(tprefix)) bankFull = '建设银行';
+            else if (/工行|工商|icbc/i.test(tprefix)) bankFull = '工商银行';
+            else if (/农行|农业|abc/i.test(tprefix)) bankFull = '农业银行';
+            else if (/中国银行|中行/i.test(tprefix)) bankFull = '中国银行';
+            else if (/浦发|浦东发展银行|spd/i.test(tprefix)) bankFull = '浦发银行';
+            else if (/招商|招商银行|cmb/i.test(tprefix)) bankFull = '招商银行';
+            else if (/民生|民生银行|cmbc/i.test(tprefix)) bankFull = '民生银行';
+            else if (/邮储|邮政储蓄/i.test(tprefix)) bankFull = '邮政储蓄银行';
+          }
+        }
+      }
 
       // 清理 branch 前置标签
       branch = branch.replace(/^(开户行[:：\s]*)/i, '').trim();
@@ -152,6 +195,18 @@
       if (bankFull) {
         if (branch.startsWith(bankFull)) branch = branch.slice(bankFull.length).trim();
         branch = branch.replace(/^(建行|工行|农行|中行|浦发|招商|民生)/i, '').trim();
+      }
+
+      // 如果 branch 内容异常（过短或仅为“支行/分行”），尝试从原始字符串中寻找更完整的支行名（选择最长或最后一个匹配）
+      if (!branch || /^支行$|^分行$/i.test(branch) || branch.length <= 3) {
+        const altBranches = s.match(/([^\n\d]{1,40}(?:支行|分行))/ig);
+        if (altBranches && altBranches.length) {
+          // 选择最长的匹配（通常包含更多地名信息），如果有相同长度选择最后一个
+          altBranches.sort((a,b)=> a.length === b.length ? 1 : b.length - a.length);
+          branch = altBranches[0].trim();
+          // 去掉可能存在的银行简称前缀
+          branch = branch.replace(/^(建设银行|工商银行|农业银行|中国银行|建行|工行|农行|中行|浦发|招商|民生|邮政储蓄)/i, '').trim();
+        }
       }
 
       // 输出：bankFull + 空格 + branch（若 bankFull 可识别），否则将 s 按第一个“银行/行”分开返回并保证有空格间隔
@@ -212,15 +267,18 @@
       // 找银行（包含'行'或'银行'或'支行'关键词）
       const bankMatch = original.match(/([^\s\d]{0,30}(?:银行|行)[^\d]{0,60}支行|[^\s\d]{0,60}(?:银行|行)[^\d]{0,60})/);
       const bankRaw = bankMatch ? bankMatch[0].trim() : '';
-      // 找姓名：优先匹配中文 2-4 字，且不是银行关键字
+      // 找姓名：优先使用带标签的格式（如“姓名：戴康”），否则匹配中文 2-6 字并过滤掉标签词/银行名
       let name = '';
-      const nameMatch = original.match(/[\u4e00-\u9fff]{1,6}/g);
-      if (nameMatch) {
-        // 过滤掉包含'银行'/'支行'等的片段
+      const labelNameMatch = original.match(/(?:姓名|户名|开户名|收款人|收款户)[:：\s]*([\u4e00-\u9fff]{2,6})/i);
+      if (labelNameMatch && labelNameMatch[1]) {
+        name = labelNameMatch[1];
+      } else {
+        const nameMatch = original.match(/[\u4e00-\u9fff]{2,6}/g) || [];
+        const stopWords = ['姓名', '户名', '开户名', '开户行', '开户', '账号', '卡号', '金额', '收款人', '收款户'];
         for (const nm of nameMatch) {
-          if (/银行|行|支行/.test(nm)) continue;
-          // 如果 nm 出现在银行Raw 里，跳过
+          if (/银行|支行|开户|开户名|行/.test(nm)) continue;
           if (bankRaw && bankRaw.indexOf(nm) !== -1) continue;
+          if (stopWords.includes(nm)) continue;
           name = nm;
           break;
         }
@@ -354,18 +412,21 @@
             if (usedIdx >= 0) usedBankIdx.add(usedIdx);
           }
 
-          // 3) 寻找最近的姓名候选（优先带冒号的形式）
+          // 3) 寻找最近的姓名候选（优先带标签的形式，如 "姓名：戴康"）
           let chosenName = '';
-          // 优先查找形如 "张炜：" 的标签（在账号附近）
-          const nameLabelMatch = text.slice(Math.max(0, mm.index - 30), mm.index + mm.length + 10).match(/([\u4e00-\u9fff]{2,4})[:：]/);
-          if (nameLabelMatch) {
+          // 优先查找明确的标签形式（在账号附近）
+          const labelSlice = text.slice(Math.max(0, mm.index - 80), mm.index + mm.length + 80);
+          const nameLabelMatch = labelSlice.match(/(?:姓名|户名|开户名|收款人|收款户)[:：\s]*([\u4e00-\u9fff]{2,6})/i);
+          if (nameLabelMatch && nameLabelMatch[1]) {
             chosenName = nameLabelMatch[1];
           } else {
             bestDist = Infinity;
+            const stopWordsLocal = ['姓名','户名','开户名','开户行','开户','账号','卡号','金额','收款人','收款户'];
             for (let j = 0; j < nameCandidates.length; j++) {
               if (usedNameIdx.has(j)) continue;
               const n = nameCandidates[j];
-              if (/银行|支行|开户|开户名/.test(n.text)) continue;
+              if (/银行|支行|开户|开户名|行/.test(n.text)) continue;
+              if (stopWordsLocal.includes(n.text)) continue;
               const d = Math.abs(n.index - mm.index);
               if (d < bestDist && d < 400) {
                 bestDist = d;
