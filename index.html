@@ -318,6 +318,16 @@
           const pref = ((m[1] || '').trim() + m[2]).trim();
           const suf = (m[3] || '').trim();
           suggestions.push({ label: '按地区拆分', bank: (pref + ' ' + suf).trim() });
+          // 如果原始文本包含公司后缀（如“股份有限公司”），同时提供“官方全称 + 支行”和“简称 + 支行”的选项
+          try {
+            if (/(股份有限公司|有限责任公司|有限公司)/i.test(text)) {
+              const fullPrefix = text.slice(0, text.indexOf(suf)).trim() || pref;
+              const official = (fullPrefix + ' ' + suf).replace(/\s+/g, ' ').trim();
+              const normShort = normalizeBankName(text || '');
+              if (official && official !== text) suggestions.push({ label: '官方全称(拆分)', bank: official });
+              if (normShort && (!official || normShort !== official)) suggestions.push({ label: '简称形式', bank: normShort });
+            }
+          } catch (e) {}
         } else if (hasDuplicateToken) {
           // If duplicate token exists but didn't match the split pattern, create a derived split suggestion:
           const preferTokens = ['农村商业银行','建设银行','浦发银行','招商银行','工商银行','农业银行','中国银行'];
@@ -498,6 +508,17 @@
       // 去重：若 branch 包含 bankFull 或简称，去掉重复前缀（支持更多简称）
       if (bankFull && branch.startsWith(bankFull)) branch = branch.slice(bankFull.length).trim();
       if (bankFull && /^(建行|工行|农行|招行|招商|浦发)/i.test(branch)) branch = branch.replace(/^(建行|工行|农行|招行|招商|浦发)/i, '').trim();
+      // 进一步清理：如果 branch 中包含官方全称（如“中国农业银行股份有限公司”）或包含 bankFull 的冗余长形式，移除这些冗余部分
+      try {
+        if (bankFull) {
+          const bankNoSpace = bankFull.replace(/\s+/g, '');
+          const redundantRe = new RegExp('(中国)?' + bankNoSpace + '(股份有限公司|有限责任公司|有限公司)?', 'i');
+          branch = branch.replace(redundantRe, '').trim();
+          // 再移除任何重复出现的 bankFull 或简称
+          branch = branch.replace(new RegExp(bankFull, 'i'), '').trim();
+          branch = branch.replace(/^(建行|工行|农行|招行|招商|浦发)/i, '').trim();
+        }
+      } catch (e) {}
       // 输出格式：全称 + 单空格 + 支行地址（若有），否则返回清洗后的 s
       if (bankFull) {
         return (bankFull + (branch ? ' ' + branch : '')).trim();
@@ -881,7 +902,7 @@
           const nextLine = ctx.slice(nextLineStart, nextLineEnd).trim();
 
           const rejectPatterns = /(省|市|县|区|镇|乡|路|街|村|公司|中心|广场|大厦|小区|花园|城|府|厅|局|所|院|校|店|馆|支行|银行)/;
-          const stopWords = ['姓名', '名字', '卡号', '开户行', '开户名', '账号', '金额', '备注', '电话', '手机号', '手机', '联系电话', '手机号码'];
+          const stopWords = ['姓名', '户名', '名字', '卡号', '开户行', '开户名', '账号', '金额', '备注', '电话', '手机号', '手机', '联系电话', '手机号码'];
 
           const findValidName = (source) => {
             if (!source || !source.trim()) return null;
