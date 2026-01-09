@@ -51,6 +51,9 @@
       <button id="clearBtn" class="secondary">清空</button>
       <button id="fillPdfBtn" class="ghost">填充 PDF 并下载</button>
       <button id="showJsonBtn" class="secondary" style="margin-left:8px;">加载到文字模板</button>
+      <label style="margin-left:8px; font-size:13px; color:#22323b; display:flex; align-items:center; gap:6px;">
+        <input id="pdfModeCheckbox" type="checkbox" checked /> 使用 PDF 定位（忽略预览尺寸）
+      </label>
     </div>
   </div>
 
@@ -93,18 +96,30 @@
     <thead>
       <tr>
         <th style="width:18%;">账户姓名</th>
-        <th style="width:42%;">银行地址</th>
-        <th style="width:25%;">账号</th>
-        <th style="width:15%;">金额</th>
+          <th style="width:36%;">银行地址</th>
+          <th style="width:22%;">账号</th>
+          <th style="width:14%;">金额</th>
+          <th style="width:6%;">操作</th>
       </tr>
     </thead>
     <tbody></tbody>
   </table>
   <!-- 表格编辑操作按钮已合并，简化界面（脚本仍保留相应逻辑） -->
 
-  <div class="total-wrap" style="width:90%; margin:10px auto; align-items:center;">
-    <div class="total-box" id="totalBox">￥0.00</div>
-    <button id="applyEditsBtn" class="secondary" style="margin-left:12px;">确认修改并更新</button>
+  <div class="total-wrap" style="width:90%; margin:10px auto; align-items:center; display:flex; justify-content:flex-end; gap:8px;">
+    <div style="flex:1;"></div>
+    <div class="total-box" id="totalBox" style="margin-right:8px;">￥0.00</div>
+    <label style="display:flex; align-items:center; gap:6px;">
+      <select id="addRowCountSelect" style="height:28px;">
+        <option value="1">添加 1</option>
+        <option value="2">添加 2</option>
+        <option value="3">添加 3</option>
+        <option value="4">添加 4</option>
+        <option value="5">添加 5</option>
+      </select>
+    </label>
+    <button id="addRowBtn" class="ghost" style="height:36px; align-self:center;">新增行</button>
+    <button id="applyEditsBtn" class="secondary" style="margin-left:4px;">确认修改并更新</button>
   </div>
   <!-- 用于 PDF.js 渲染的隐藏 canvas -->
   <div style="margin-top:12px;">
@@ -517,7 +532,6 @@
       const lines = [];
       lines.push('尊敬的客户，');
       lines.push('');
-      lines.push('');
       lines.push(' 以下是人民币账户信息，文字和图片内容一致，辛苦您汇入：');
       lines.push('');
 
@@ -529,11 +543,8 @@
         const amtNum = Number(r.amount || 0);
         const amtLine = amtRaw ? (amtRaw) : (amtNum ? formatAmountDisplay(amtNum) : '¥');
         lines.push(amtLine);
-        lines.push('');
         lines.push(safe(r.name));
-        lines.push('');
         lines.push(safe(r.bank));
-        lines.push('');
         lines.push(safe(r.account));
         // 在每段之间增加一行空行（但最后一段后不需要双空）
         if (i < records.length - 1) lines.push('');
@@ -541,15 +552,10 @@
 
       lines.push('');
       lines.push('汇款时请注意一下几点： ');
-      lines.push('');
-      lines.push('          ①　请严格按照所提供的金额和账户打入 ');
-      lines.push('');
+      lines.push('          ①　请严格按照所提供的金额和账户打入 ')
       lines.push('          ②　汇款时不要留任何备注 ');
-      lines.push('');
       lines.push('          ③　汇款成功后请发回电子转账凭证（又称电子回单，显示您汇出姓名和账户的回单），并告知我们您汇出的银行');
-      lines.push('');
       lines.push('          ④　人民币账户单笔有效，请下次在做交易时索要新的人民币账户 ');
-      lines.push('');
       lines.push('          ⑤　务必不要现金存入我们的账户【英文名、拼音名账户汇入请务必提前告知】');
       return lines.join('\n');
     }
@@ -1518,7 +1524,7 @@
     function renderResultsEditable(records) {
       const tbody = document.querySelector('#resultTable tbody');
       tbody.innerHTML = '';
-      for (const r of records) {
+      for (const [idx, r] of records.entries()) {
         const tr = document.createElement('tr');
         // 姓名
         const tdName = document.createElement('td');
@@ -1553,11 +1559,34 @@
         amtInput.style.width = '100%';
         amtInput.dataset.field = 'amount';
         tdAmount.appendChild(amtInput);
+        // 操作列：删除按钮
+        const tdAction = document.createElement('td');
+        tdAction.style.textAlign = 'center';
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'ghost';
+        delBtn.textContent = '删除';
+        delBtn.style.padding = '6px 8px';
+        delBtn.style.fontSize = '12px';
+        delBtn.addEventListener('click', () => {
+          // 删除当前行并更新表格、预览与模板
+          tr.remove();
+          recalcTotalFromTable();
+          try { drawOverlayFromTable(); } catch (e) {}
+          try {
+            const recs = getRecordsFromTable() || [];
+            const tpl = buildCustomerTemplate(recs || []);
+            const dbg = document.getElementById('debugJson');
+            if (dbg) { dbg.style.display = 'block'; dbg.textContent = tpl; }
+          } catch (e) { console.warn('update template after delete failed', e); }
+        });
+        tdAction.appendChild(delBtn);
 
         tr.appendChild(tdName);
         tr.appendChild(tdBank);
         tr.appendChild(tdAcc);
         tr.appendChild(tdAmount);
+        tr.appendChild(tdAction);
         tbody.appendChild(tr);
       }
       recalcTotalFromTable();
@@ -1705,6 +1734,13 @@
         } else {
           alert(out);
         }
+        try {
+          if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(out).then(() => {
+              try { document.getElementById('coordHint').textContent = '模板已复制到剪贴板。'; } catch (e) {}
+            }).catch(() => {});
+          }
+        } catch (e) {}
         return;
       }
       win.document.title = '客户模板';
@@ -1716,6 +1752,14 @@
       win.document.body.style.fontFamily = 'monospace, monospace';
       win.document.body.style.padding = '12px';
       win.document.body.appendChild(pre);
+      // 也尝试复制到剪贴板（用户手动允许时有效）
+      try {
+        if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(out).then(() => {
+            try { document.getElementById('coordHint').textContent = '模板已复制到剪贴板。'; } catch (e) {}
+          }).catch(() => {});
+        }
+      } catch (e) {}
     }); })();
 
     (function(){ const el = document.getElementById('clearBtn'); if (el) el.addEventListener('click', () => {
@@ -1752,11 +1796,33 @@
           dbg.style.display = 'block';
           dbg.textContent = tpl;
         }
+        // 复制模板到剪贴板（若支持）
+        try {
+          if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(tpl).then(() => {
+              try { document.getElementById('coordHint').textContent = '模板已复制到剪贴板。'; } catch (e) {}
+            }).catch(() => {});
+          }
+        } catch (e) {}
       } catch (e) { console.warn('update template after applyEdits failed', e); }
     }); })();
 
     (function(){ const el = document.getElementById('addRowBtn'); if (el) el.addEventListener('click', () => {
-      renderResultsEditable([].slice.call(document.querySelectorAll('#resultTable tbody tr')).map(tr => {
+      const tbody = document.querySelector('#resultTable tbody');
+      const current = tbody ? tbody.querySelectorAll('tr').length : 0;
+      const MAX_ROWS = 5;
+      const sel = document.getElementById('addRowCountSelect');
+      const count = sel ? Math.max(1, Math.min(5, parseInt(sel.value || '1'))) : 1;
+      if (current >= MAX_ROWS) {
+        alert('最多允许 ' + MAX_ROWS + ' 条账户记录。');
+        return;
+      }
+      const canAdd = Math.min(count, MAX_ROWS - current);
+      if (canAdd <= 0) {
+        alert('无法添加更多行，已达最大数量 ' + MAX_ROWS);
+        return;
+      }
+      const records = [].slice.call(document.querySelectorAll('#resultTable tbody tr')).map(tr => {
         return {
           name: tr.querySelector('input[data-field="name"]').value,
           bank: tr.querySelector('input[data-field="bank"]').value,
@@ -1764,7 +1830,9 @@
           amountRaw: tr.querySelector('input[data-field="amount"]').value,
           amount: parseAmountToNumber(tr.querySelector('input[data-field="amount"]').value)
         };
-      }).concat([{ name:'', bank:'', account:'', amountRaw:'', amount:0 }]));
+      });
+      for (let i = 0; i < canAdd; i++) records.push({ name:'', bank:'', account:'', amountRaw:'', amount:0 });
+      renderResultsEditable(records);
     }); })();
 
     // PDF 上传占位（后续将使用 pdf-lib 填充模板）
@@ -1898,9 +1966,16 @@
       // 为了生成与浏览器无关的 PDF，使用固定模板像素坐标作为参考
       // 并将这些固定坐标按 PDF 页面尺寸比例映射到 PDF 点坐标。
       // 参考基础 canvas 宽高来自渲染模板时保存的 window.__baseCanvasSize（若存在）。
-      const baseCanvas = window.__baseCanvasSize || { width: 1000, height: 1414 }; // 作为后备参考
-      const refCanvasWidth = baseCanvas.width || 1000;
-      const refCanvasHeight = baseCanvas.height || 1414;
+      // 为了生成与浏览器无关的 PDF，支持“PDF 定位模式”——使用固定参考画布尺寸（与模板设计一致）
+      const usePdfMode = !!(document.getElementById('pdfModeCheckbox') && document.getElementById('pdfModeCheckbox').checked);
+      const DEFAULT_REF_CANVAS = { width: 1000, height: 1414 }; // 参考 canvas（模板设计参考像素）
+      let refCanvasWidth = DEFAULT_REF_CANVAS.width;
+      let refCanvasHeight = DEFAULT_REF_CANVAS.height;
+      if (!usePdfMode) {
+        const baseCanvas = window.__baseCanvasSize || DEFAULT_REF_CANVAS;
+        refCanvasWidth = baseCanvas.width || DEFAULT_REF_CANVAS.width;
+        refCanvasHeight = baseCanvas.height || DEFAULT_REF_CANVAS.height;
+      }
       const col1X = FIXED_COORDS.col1;
       const col2X = FIXED_COORDS.col2;
       const col3X = FIXED_COORDS.col3;
