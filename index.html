@@ -473,6 +473,40 @@
       return digits.replace(/(.{4})/g, '$1 ').trim();
     }
 
+    // 银行名映射表（可维护）：短名/变体 -> 银行全称
+    const BANK_MAPPINGS = [
+      { full: '建设银行', variants: ['建行','建设','ccb','中国建设银行','中国建设银行股份有限公司'] },
+      { full: '工商银行', variants: ['工行','工商','icbc','中国工商银行','中国工商银行股份有限公司'] },
+      { full: '农业银行', variants: ['农行','农业','abc','中国农业银行','中国农业银行股份有限公司'] },
+      { full: '中国银行', variants: ['中国银行','中行','bankofchina'] },
+      { full: '招商银行', variants: ['招商','招行','cmb','招商银行股份有限公司'] },
+      { full: '浦发银行', variants: ['浦发','spd','浦东发展银行','上海浦东发展银行'] },
+      { full: '交通银行', variants: ['交通','交通银行','交通银行股份有限公司'] },
+      { full: '兴业银行', variants: ['兴业','兴业银行'] },
+      { full: '民生银行', variants: ['民生','民生银行'] },
+      { full: '中信银行', variants: ['中信','中信银行'] },
+      { full: '广发银行', variants: ['广发','广发银行','gdb'] },
+      { full: '华夏银行', variants: ['华夏','华夏银行'] },
+      { full: '平安银行', variants: ['平安','平安银行'] },
+      { full: '光大银行', variants: ['光大','光大银行'] },
+      { full: '渤海银行', variants: ['渤海','渤海银行'] },
+      { full: '恒丰银行', variants: ['恒丰','恒丰银行'] },
+      { full: '中国邮政储蓄银行', variants: ['邮政储蓄','邮储','中国邮政储蓄银行'] }
+    ];
+
+    // 用于从分支部分中移除冗余银行名称的列表（包含多种全称/简称变体）
+    const BANK_NAMES_TO_STRIP = [
+      '中国建设银行股份有限公司','中国建设银行','建设银行','建行',
+      '中国工商银行股份有限公司','中国工商银行','工商银行','工行',
+      '中国农业银行股份有限公司','中国农业银行','农业银行','农行',
+      '中国银行','中行',
+      '招商银行股份有限公司','招商银行','招行','招商',
+      '上海浦东发展银行','浦发银行','浦发','浦东发展银行',
+      '交通银行股份有限公司','交通银行','交通',
+      '兴业银行','民生银行','中信银行','广发银行','广发','gdb','华夏银行',
+      '平安银行','光大银行','渤海银行','恒丰银行','中国邮政储蓄银行','邮政储蓄','邮储'
+    ];
+
     // 银行名智能识别并保留支行地址（尽量保留支行后缀）
     function normalizeBankName(raw) {
       if (!raw) return '';
@@ -485,42 +519,29 @@
       const t = s.replace(/\s+/g, '');
       // 识别银行简称并映射到全称（增加招商、浦发、招行等）
       let bankFull = '';
-      if (/建行|建设|ccb|中国建设银行|中国建设银行股份有限公司/i.test(t)) bankFull = '建设银行';
-      else if (/工行|工商|icbc|中国工商银行|中国工商银行股份有限公司/i.test(t)) bankFull = '工商银行';
-      else if (/农行|农业|abc|中国农业银行|中国农业银行股份有限公司/i.test(t)) bankFull = '农业银行';
-      else if (/中国银行|中行|bankofchina/i.test(t)) bankFull = '中国银行';
-      else if (/招商|招行|cmb|招商银行股份有限公司/i.test(t)) bankFull = '招商银行';
-      else if (/浦发|spd|浦东发展银行|上海浦东发展银行/i.test(t)) bankFull = '浦发银行';
-      else if (/交通|交通银行|bankofcommunications/i.test(t)) bankFull = '交通银行';
-      else if (/兴业|兴业银行/i.test(t)) bankFull = '兴业银行';
-      else if (/民生|民生银行/i.test(t)) bankFull = '民生银行';
-      else if (/中信|中信银行/i.test(t)) bankFull = '中信银行';
-      else if (/广发|广发银行|gdb/i.test(t)) bankFull = '广发银行';
-      else if (/华夏|华夏银行/i.test(t)) bankFull = '华夏银行';
-      else if (/平安|平安银行/i.test(t)) bankFull = '平安银行';
-      else if (/光大|光大银行/i.test(t)) bankFull = '光大银行';
-      else if (/渤海|渤海银行/i.test(t)) bankFull = '渤海银行';
-      else if (/恒丰|恒丰银行/i.test(t)) bankFull = '恒丰银行';
-      else if (/邮政储蓄|邮储|中国邮政储蓄银行/i.test(t)) bankFull = '中国邮政储蓄银行';
+      // 使用 BANK_MAPPINGS 映射表查找
+      for (const bm of BANK_MAPPINGS) {
+        for (const v of bm.variants) {
+          // 有些变体包含空格或中文，使用不区分大小写的包含判断或正则匹配
+          try {
+            if (new RegExp(v, 'i').test(t)) { bankFull = bm.full; break; }
+          } catch (e) {
+            if ((t || '').indexOf(v.replace(/\s+/g, '')) !== -1) { bankFull = bm.full; break; }
+          }
+        }
+        if (bankFull) break;
+      }
       // 提取支行或地址部分（优先包含“支行”或“分行”的片段）
       let branch = '';
       const branchMatch = s.match(/(\S{0,80}支行\S{0,80}|\S{0,80}分行\S{0,80})/);
       if (branchMatch) branch = branchMatch[0].trim();
       // 如果未找到明确支行，尝试取去除已识别银行简称或全称后的剩余部分
       if (!branch) {
-        const bankNamesToStrip = [
-          '中国建设银行股份有限公司','中国建设银行','建设银行','建行',
-          '中国工商银行股份有限公司','中国工商银行','工商银行','工行',
-          '中国农业银行股份有限公司','中国农业银行','农业银行','农行',
-          '中国银行','中行',
-          '招商银行股份有限公司','招商银行','招行','招商',
-          '上海浦东发展银行','浦发银行','浦发','浦东发展银行',
-          '交通银行股份有限公司','交通银行','交通',
-          '兴业银行','民生银行','中信银行','广发银行','华夏银行',
-          '平安银行','光大银行','渤海银行','恒丰银行','中国邮政储蓄银行','邮政储蓄','邮储'
-        ];
+        const bankNamesToStrip = BANK_NAMES_TO_STRIP.slice();
         let tmp = s;
-        for (const b of bankNamesToStrip) tmp = tmp.replace(new RegExp(b, 'i'), '');
+        for (const b of bankNamesToStrip) {
+          try { tmp = tmp.replace(new RegExp(b, 'i'), ''); } catch (e) { tmp = tmp.replace(b, ''); }
+        }
         branch = tmp.trim();
       }
       // 清理 branch 前面的标签词（如 "开户行："）
