@@ -115,7 +115,6 @@
         <option value="2">添加 2</option>
         <option value="3">添加 3</option>
         <option value="4">添加 4</option>
-        <option value="5">添加 5</option>
       </select>
     </label>
     <button id="addRowBtn" class="ghost" style="height:36px; align-self:center;">新增行</button>
@@ -486,19 +485,40 @@
       const t = s.replace(/\s+/g, '');
       // 识别银行简称并映射到全称（增加招商、浦发、招行等）
       let bankFull = '';
-      if (/建行|建设|ccb/i.test(t)) bankFull = '建设银行';
-      else if (/工行|工商|icbc/i.test(t)) bankFull = '工商银行';
-      else if (/农行|农业|abc/i.test(t)) bankFull = '农业银行';
-      else if (/中国银行|中行/i.test(t)) bankFull = '中国银行';
-      else if (/招商|招行|cmb/i.test(t)) bankFull = '招商银行';
-      else if (/浦发|spd|浦东发展银行/i.test(t)) bankFull = '浦发银行';
+      if (/建行|建设|ccb|中国建设银行|中国建设银行股份有限公司/i.test(t)) bankFull = '建设银行';
+      else if (/工行|工商|icbc|中国工商银行|中国工商银行股份有限公司/i.test(t)) bankFull = '工商银行';
+      else if (/农行|农业|abc|中国农业银行|中国农业银行股份有限公司/i.test(t)) bankFull = '农业银行';
+      else if (/中国银行|中行|bankofchina/i.test(t)) bankFull = '中国银行';
+      else if (/招商|招行|cmb|招商银行股份有限公司/i.test(t)) bankFull = '招商银行';
+      else if (/浦发|spd|浦东发展银行|上海浦东发展银行/i.test(t)) bankFull = '浦发银行';
+      else if (/交通|交通银行|bankofcommunications/i.test(t)) bankFull = '交通银行';
+      else if (/兴业|兴业银行/i.test(t)) bankFull = '兴业银行';
+      else if (/民生|民生银行/i.test(t)) bankFull = '民生银行';
+      else if (/中信|中信银行/i.test(t)) bankFull = '中信银行';
+      else if (/广发|广发银行|gdb/i.test(t)) bankFull = '广发银行';
+      else if (/华夏|华夏银行/i.test(t)) bankFull = '华夏银行';
+      else if (/平安|平安银行/i.test(t)) bankFull = '平安银行';
+      else if (/光大|光大银行/i.test(t)) bankFull = '光大银行';
+      else if (/渤海|渤海银行/i.test(t)) bankFull = '渤海银行';
+      else if (/恒丰|恒丰银行/i.test(t)) bankFull = '恒丰银行';
+      else if (/邮政储蓄|邮储|中国邮政储蓄银行/i.test(t)) bankFull = '中国邮政储蓄银行';
       // 提取支行或地址部分（优先包含“支行”或“分行”的片段）
       let branch = '';
       const branchMatch = s.match(/(\S{0,80}支行\S{0,80}|\S{0,80}分行\S{0,80})/);
       if (branchMatch) branch = branchMatch[0].trim();
       // 如果未找到明确支行，尝试取去除已识别银行简称或全称后的剩余部分
       if (!branch) {
-        const bankNamesToStrip = ['建设银行','建行','工商银行','工行','农业银行','农行','中国银行','中行','招商银行','招行','招商','浦发银行','浦发','浦东发展银行'];
+        const bankNamesToStrip = [
+          '中国建设银行股份有限公司','中国建设银行','建设银行','建行',
+          '中国工商银行股份有限公司','中国工商银行','工商银行','工行',
+          '中国农业银行股份有限公司','中国农业银行','农业银行','农行',
+          '中国银行','中行',
+          '招商银行股份有限公司','招商银行','招行','招商',
+          '上海浦东发展银行','浦发银行','浦发','浦东发展银行',
+          '交通银行股份有限公司','交通银行','交通',
+          '兴业银行','民生银行','中信银行','广发银行','华夏银行',
+          '平安银行','光大银行','渤海银行','恒丰银行','中国邮政储蓄银行','邮政储蓄','邮储'
+        ];
         let tmp = s;
         for (const b of bankNamesToStrip) tmp = tmp.replace(new RegExp(b, 'i'), '');
         branch = tmp.trim();
