@@ -656,100 +656,16 @@
       return digits.replace(/(.{4})/g, '$1 ').trim();
     }
 
-    // 银行名映射表（可维护）：短名/变体 -> 银行全称
-    const BANK_MAPPINGS = [
-      { full: '建设银行', variants: ['建行','建设','ccb','中国建设银行','中国建设银行股份有限公司'] },
-      { full: '工商银行', variants: ['工行','工商','icbc','中国工商银行','中国工商银行股份有限公司'] },
-      { full: '农业银行', variants: ['农行','农业','abc','中国农业银行','中国农业银行股份有限公司'] },
-      { full: '中国银行', variants: ['中国银行','中行','bankofchina'] },
-      { full: '招商银行', variants: ['招商','招行','cmb','招商银行股份有限公司'] },
-      { full: '浦发银行', variants: ['浦发','spd','浦东发展银行','上海浦东发展银行'] },
-      { full: '交通银行', variants: ['交通','交通银行','交通银行股份有限公司'] },
-      { full: '兴业银行', variants: ['兴业','兴业银行'] },
-      { full: '民生银行', variants: ['民生','民生银行'] },
-      { full: '中信银行', variants: ['中信','中信银行'] },
-      { full: '广发银行', variants: ['广发','广发银行','gdb'] },
-      { full: '华夏银行', variants: ['华夏','华夏银行'] },
-      { full: '平安银行', variants: ['平安','平安银行'] },
-      { full: '光大银行', variants: ['光大','光大银行'] },
-      { full: '渤海银行', variants: ['渤海','渤海银行'] },
-      { full: '恒丰银行', variants: ['恒丰','恒丰银行'] },
-      { full: '中国邮政储蓄银行', variants: ['邮政储蓄','邮储','中国邮政储蓄银行'] }
-    ];
 
-    // 用于从分支部分中移除冗余银行名称的列表（包含多种全称/简称变体）
-    const BANK_NAMES_TO_STRIP = [
-      '中国建设银行股份有限公司','中国建设银行','建设银行','建行',
-      '中国工商银行股份有限公司','中国工商银行','工商银行','工行',
-      '中国农业银行股份有限公司','中国农业银行','农业银行','农行',
-      '中国银行','中行',
-      '招商银行股份有限公司','招商银行','招行','招商',
-      '上海浦东发展银行','浦发银行','浦发','浦东发展银行',
-      '交通银行股份有限公司','交通银行','交通',
-      '兴业银行','民生银行','中信银行','广发银行','广发','gdb','华夏银行',
-      '平安银行','光大银行','渤海银行','恒丰银行','中国邮政储蓄银行','邮政储蓄','邮储'
-    ];
-
-    // 银行名智能识别并保留支行地址（尽量保留支行后缀）
+    // 银行名智能识别（宽松模式：保留原始输入，不强制缩写/扩展）
     function normalizeBankName(raw) {
       if (!raw) return '';
-      // 清理多余符号、标签词和全角空格
       let s = String(raw || '');
       s = s.replace(/(?:开户行|开户名)[:：\s]*/ig, ' ');
-      s = s.replace(/[\u3000]/g, ' ').replace(/[\(\)\[\]{}「」『』“”"']/g, '').trim();
-      // 合并多余空格
+      s = s.replace(/[\u3000]/g, ' ').replace(/[\(\)\[\]{}「」『』""']/g, '').trim();
       s = s.replace(/\s+/g, ' ');
-      const t = s.replace(/\s+/g, '');
-      // 识别银行简称并映射到全称（增加招商、浦发、招行等）
-      let bankFull = '';
-      // 使用 BANK_MAPPINGS 映射表查找
-      for (const bm of BANK_MAPPINGS) {
-        for (const v of bm.variants) {
-          // 有些变体包含空格或中文，使用不区分大小写的包含判断或正则匹配
-          try {
-            if (new RegExp(v, 'i').test(t)) { bankFull = bm.full; break; }
-          } catch (e) {
-            if ((t || '').indexOf(v.replace(/\s+/g, '')) !== -1) { bankFull = bm.full; break; }
-          }
-        }
-        if (bankFull) break;
-      }
-      // 提取支行或地址部分（优先包含“支行”或“分行”的片段）
-      let branch = '';
-      const branchMatch = s.match(/(\S{0,80}支行\S{0,80}|\S{0,80}分行\S{0,80})/);
-      if (branchMatch) branch = branchMatch[0].trim();
-      // 如果未找到明确支行，尝试取去除已识别银行简称或全称后的剩余部分
-      if (!branch) {
-        const bankNamesToStrip = BANK_NAMES_TO_STRIP.slice();
-        let tmp = s;
-        for (const b of bankNamesToStrip) {
-          try { tmp = tmp.replace(new RegExp(b, 'i'), ''); } catch (e) { tmp = tmp.replace(b, ''); }
-        }
-        branch = tmp.trim();
-      }
-      // 清理 branch 前面的标签词（如 "开户行："）
-      branch = branch.replace(/^(开户行[:：\s]*)/i, '').trim();
-      // 去重：若 branch 包含 bankFull 或简称，去掉重复前缀（支持更多简称）
-      if (bankFull && branch.startsWith(bankFull)) branch = branch.slice(bankFull.length).trim();
-      if (bankFull && /^(建行|工行|农行|招行|招商|浦发)/i.test(branch)) branch = branch.replace(/^(建行|工行|农行|招行|招商|浦发)/i, '').trim();
-      // 进一步清理：如果 branch 中包含官方全称（如“中国农业银行股份有限公司”）或包含 bankFull 的冗余长形式，移除这些冗余部分
-      try {
-        if (bankFull) {
-          const bankNoSpace = bankFull.replace(/\s+/g, '');
-          const redundantRe = new RegExp('(中国)?' + bankNoSpace + '(股份有限公司|有限责任公司|有限公司)?', 'i');
-          branch = branch.replace(redundantRe, '').trim();
-          // 再移除任何重复出现的 bankFull 或简称
-          branch = branch.replace(new RegExp(bankFull, 'i'), '').trim();
-          branch = branch.replace(/^(建行|工行|农行|招行|招商|浦发)/i, '').trim();
-        }
-      } catch (e) {}
-      // 输出格式：全称 + 单空格 + 支行地址（若有），否则返回清洗后的 s
-      if (bankFull) {
-        return (bankFull + (branch ? ' ' + branch : '')).trim();
-      }
       return s;
     }
-
     // 将金额文本解析为数字（元）
     function parseAmountToNumber(raw) {
       if (raw === undefined || raw === null) return 0;
@@ -1571,34 +1487,12 @@
           } catch (e) {}
 
       // Final extra cleanup: normalize bank names and remove repeated bank tokens
+      // 仅做基本清理，不强制缩写或扩展银行名
       try {
-        const knownReplacements = {
-          '建行': '建设银行',
-          '工行': '工商银行',
-          '农行': '农业银行',
-          '招行': '招商银行',
-          '浦发': '浦发银行',
-          '中行': '中国银行'
-        };
         for (const rec of records) {
           try {
             if (!rec || !rec.bank) continue;
-            // try normalize using existing function (maps abbreviations to full)
-            const norm = normalizeBankName(rec.bank || '');
-            if (norm && norm !== rec.bank) rec.bank = norm;
-            // replace short forms with full forms
-            for (const short in knownReplacements) {
-              const full = knownReplacements[short];
-              const re = new RegExp('\\b' + short + '\\b', 'g');
-              rec.bank = rec.bank.replace(re, full);
-            }
-            // collapse duplicated bank tokens (e.g. "建设银行 建设银行..." or "浦发银行 浦发银行...")
-            for (const v of Object.values(knownReplacements).concat(['建设银行','工商银行','农村商业银行','浦发银行'])) {
-              const esc = v.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-              const dupRe = new RegExp('(' + esc + ')\\s+(' + esc + ')', 'gi');
-              if (dupRe.test(rec.bank)) rec.bank = rec.bank.replace(dupRe, '$1 ');
-            }
-            rec.bank = rec.bank.replace(/\s+/g, ' ').trim();
+            rec.bank = normalizeBankName(rec.bank || '');
           } catch (e) {}
         }
       } catch (e) {}
@@ -1651,115 +1545,19 @@
       } catch (e) {}
     })();
 
-    // Hard-coded dedupe fixes for repeated tokens (final safety net)
+    // Basic dedupe: collapse repeated adjacent bank tokens without forcing abbreviation
     (function () {
       try {
         for (const rec of records) {
           try {
             if (!rec || !rec.bank) continue;
-            // Replace short forms like '建行' with full '建设银行'
-            rec.bank = rec.bank.replace(/\b建行\b/g, '建设银行');
-
-            // If '农村商业银行' appears more than once, prefer the later locality-prefixed occurrence
-            const token = '农村商业银行';
-            const first = rec.bank.indexOf(token);
-            const second = rec.bank.indexOf(token, first + 1);
-            if (first !== -1 && second !== -1) {
-              const after = rec.bank.slice(second);
-              const suff = after.match(/[\u4e00-\u9fff\s]*?(支行|分行)/);
-              if (suff && suff[0]) {
-                const prefixStart = Math.max(0, second - 40);
-                const prefix = rec.bank.slice(prefixStart, second + token.length).trim();
-                const out = (prefix + ' ' + suff[0].trim()).replace(/\s+/g, ' ').trim();
-                // remove name if present
-                if (rec.name) {
-                  const esc = rec.name.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-                  rec.bank = out.replace(new RegExp(esc, 'g'), '').trim();
-                } else {
-                  rec.bank = out;
-                }
-              }
+            const bankTokens = ['建设银行','工商银行','农业银行','中国银行','招商银行','浦发银行','农村商业银行'];
+            for (const v of bankTokens) {
+              const esc = v.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+              const dupRe = new RegExp('(' + esc + ')\\s+(' + esc + ')', 'gi');
+              if (dupRe.test(rec.bank)) rec.bank = rec.bank.replace(dupRe, '$1 ');
             }
-          } catch (e) {}
-        }
-      } catch (e) {}
-    })();
-
-    // Final targeted dedupe: if a bank token appears multiple times and the later occurrence has a locality prefix,
-    // prefer the later locality-prefixed occurrence and split into "prefix+bankToken + branch"
-    (function () {
-      try {
-        const tokens = ['农村商业银行','建设银行','浦发银行','招商银行','工商银行','农业银行','中国银行'];
-        for (const rec of records) {
-          try {
-            if (!rec || !rec.bank) continue;
-            const textBank = rec.bank;
-            for (const token of tokens) {
-              const occs = [];
-              let idx = textBank.indexOf(token);
-              while (idx !== -1) {
-                occs.push(idx);
-                idx = textBank.indexOf(token, idx + token.length);
-              }
-              if (occs.length < 2) continue;
-              // examine the later occurrences (prefer the second occurrence)
-              const secondIdx = occs[1];
-              // look for a short locality prefix immediately before the second occurrence (avoid capturing earlier duplicate tokens)
-              const before = textBank.slice(Math.max(0, secondIdx - 12), secondIdx);
-              // require a locality token or non-empty prefix
-              if (!/省|市|县|区|镇|乡|村/.test(before) && before.trim().length < 2) continue;
-              const after = textBank.slice(secondIdx + token.length);
-              const suffMatch = after.match(/[\u4e00-\u9fff\s]*?(支行|分行)/i);
-              const suffix = suffMatch && suffMatch[0] ? suffMatch[0].trim() : '';
-              if (!suffix) continue;
-              const prefix = textBank.slice(Math.max(0, secondIdx - 40), secondIdx + token.length).trim();
-              let out = (prefix + ' ' + suffix).replace(/\s+/g, ' ').trim();
-              if (rec.name) {
-                const esc = rec.name.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-                out = out.replace(new RegExp(esc, 'g'), '').replace(/\s+/g, ' ').trim();
-              }
-              rec.bank = out;
-              break;
-            }
-          } catch (e) {}
-        }
-      } catch (e) {}
-    })();
-
-    // Final heuristic: for each bank token, pick the longest branch-containing match in rec.bank if duplicates exist
-    (function () {
-      try {
-        const preferBanks = ['农村商业银行','建设银行','浦发银行','招商银行','工商银行','农业银行','中国银行'];
-        for (const rec of records) {
-          try {
-            if (!rec || !rec.bank) continue;
-            for (const bankToken of preferBanks) {
-              try {
-                const matchRe = new RegExp('[\\u4e00-\\u9fff]{0,80}' + bankToken + '[\\u4e00-\\u9fff\\s]{0,80}?支行', 'gi');
-                let m;
-                let best = '';
-                while ((m = matchRe.exec(rec.bank)) !== null) {
-                  const cand = (m[0] || '').trim();
-                  if (cand.length > best.length) best = cand;
-                }
-                if (best) {
-                  // split best into prefix containing bankToken and suffix (branch)
-                  const idx = best.indexOf(bankToken);
-                  if (idx !== -1) {
-                    const prefix = best.slice(0, idx + bankToken.length).trim();
-                    const suffixMatch = best.slice(idx + bankToken.length).match(/[\u4e00-\u9fff\s]*?(支行|分行)/i);
-                    const suffix = suffixMatch && suffixMatch[0] ? suffixMatch[0].trim() : '';
-                    let out = (prefix + (suffix ? (' ' + suffix) : '')).trim();
-                    if (rec.name) {
-                      const escName = rec.name.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-                      out = out.replace(new RegExp(escName, 'g'), '').replace(/\s+/g, ' ').trim();
-                    }
-                    rec.bank = out;
-                    break;
-                  }
-                }
-              } catch (e) {}
-            }
+            rec.bank = rec.bank.replace(/\s+/g, ' ').trim();
           } catch (e) {}
         }
       } catch (e) {}
@@ -2680,7 +2478,7 @@
 **关键规则：**
 - 金额转换：500万 → 5000000，200w → 2000000，1000万 → 10000000
 - 账号：10-22位纯数字，排除手机号（1开头11位）和邮编
-- 银行：必须包含「银行」或「支行」关键词；若文本仅写「建行」「工行」等简称，需扩展为全称（如建行→建设银行）
+- 银行：必须包含「银行」或「支行」关键词；保留原始输入格式，不强制缩写或扩展
 - 姓名：2-6个汉字，自然人姓名特征；若文本为「XX公司」「XX财务」等公司名称则不要识别为姓名
 - 若某条记录缺少超过2个字段，忽略该条记录
 - 输出 JSON 数组格式，不要包含任何其他文字说明`;
