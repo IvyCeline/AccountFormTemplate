@@ -33,6 +33,21 @@
     .controls { justify-content:center; }
     .controls > div:first-child { flex: none !important; text-align:center; }
     table { width:90%; margin: 0 auto; }
+    .template-status { color:#22323b; font-size:14px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:center; }
+    .template-status .load-state { color:#0b66c3; font-weight:700; }
+    .top-actions { display:flex; gap:10px; align-items:center; justify-content:center; flex-wrap:wrap; }
+    .export-toolbar {
+      display:inline-flex; align-items:center; gap:4px; padding:4px;
+      border:1px solid #dbeaf8; border-radius:8px; background:#f8fbff;
+    }
+    .export-label { color:#0b66c3; font-size:13px; font-weight:800; padding:0 6px; }
+    button.export-option { padding:7px 10px; border-radius:6px; font-size:13px; min-width:44px; box-shadow:none; }
+    .float-clear {
+      position:fixed; right:22px; bottom:22px; z-index:9000;
+      border-radius:999px; padding:12px 18px; background:#ef4444; color:#fff;
+      box-shadow:0 10px 28px rgba(239,68,68,0.22);
+    }
+    .float-clear:hover { opacity:0.9; }
     /* === AI 助手样式 === */
     .ai-badge {
       display: inline-flex; align-items: center; gap:4px;
@@ -138,20 +153,20 @@
     <h1>RMB账户表格识别 — MVP</h1>
 
     <div class="controls">
-    <div style="flex:1; min-width:220px; color:#22323b;">
-      模板（从同目录读取）： <strong>GQC RMB账户表格 (1).pdf</strong>
+      <div class="template-status">
+        <span>模板：<strong>GQC RMB账户表格 (1).pdf</strong></span>
+        <span id="templateLoadStatus" class="load-state">自动加载中…</span>
+      </div>
+      <div class="top-actions">
+        <button id="showJsonBtn" class="secondary">加载到文字模板</button>
+        <div class="export-toolbar" aria-label="导出">
+          <span class="export-label">导出</span>
+          <button id="fillPdfBtn" class="ghost export-option">PDF</button>
+          <button id="exportPngBtn" class="ghost export-option">PNG</button>
+          <button id="exportJpgBtn" class="ghost export-option">JPG</button>
+        </div>
+      </div>
     </div>
-    <div style="display:flex; gap:8px; align-items:center;">
-      <button id="loadLocalBtn">加载本地模板并渲染</button>
-      <button id="parseBtn">解析并显示</button>
-      <button id="clearBtn" class="secondary">清空</button>
-      <button id="fillPdfBtn" class="ghost">填充 PDF 并下载</button>
-      <button id="showJsonBtn" class="secondary" style="margin-left:8px;">加载到文字模板</button>
-      <label style="margin-left:8px; font-size:13px; color:#22323b; display:flex; align-items:center; gap:6px;">
-        <input id="pdfModeCheckbox" type="checkbox" checked /> 使用 PDF 定位（忽略预览尺寸）
-      </label>
-    </div>
-  </div>
 
   <div class="controls" style="margin-top:12px; display:none;">
     <div style="flex:1; color:#22323b;">
@@ -174,19 +189,10 @@
     <label for="inputText">粘贴或输入待识别文本（每笔一行，支持混合行）</label>
     <textarea id="inputText" placeholder=" "></textarea>
   </div>
+  <button id="clearBtn" class="float-clear">清空</button>
 
   <!-- AI 助手功能区 -->
   <div id="aiSection" style="width:90%; margin:12px auto;">
-    <!-- 标签切换 -->
-    <div class="ai-tab">
-      <button class="ai-tab-btn active" id="tabAiBtn" onclick="switchInputTab('ai')">
-        <span class="ai-badge" style="font-size:11px; padding:2px 6px;">AI</span> 智能识别
-      </button>
-      <button class="ai-tab-btn" id="tabRuleBtn" onclick="switchInputTab('rule')">
-        规则解析
-      </button>
-    </div>
-
     <!-- AI 设置行（Groq API Key + 模型） -->
     <div class="ai-settings-row" id="aiSettingsRow">
       <label for="groqApiKey">🔑 Groq API Key</label>
@@ -273,7 +279,7 @@
   </div>
   <pre id="debugJson" style="width:90%; margin:12px; border:1px solid #ccc; padding:8px; display:none; white-space:pre-wrap; word-break:break-word; text-align:left;"></pre>
 
-  <div class="small">说明：该页面为前端 MVP，使用内置规则解析账号/姓名/银行/金额并展示结果；后续会集成 OCR 与 PDF 填充。</div>
+  <div class="small">说明：粘贴账户文本后使用 AI 智能识别并审核，确认后可直接预览并导出 PDF/PNG/JPG。</div>
 
   <table id="resultTable" aria-label="识别结果">
     <thead>
@@ -305,7 +311,7 @@
   </div>
   <!-- 用于 PDF.js 渲染的隐藏 canvas -->
   <div style="margin-top:12px;">
-    <canvas id="pdfCanvas" style="border:1px solid #ddd; max-width:100%;"></canvas>
+    <canvas id="pdfCanvas" style="border:0; max-width:100%;"></canvas>
   </div>
   <!-- 坐标控件已移除以简化界面（脚本中保留逻辑以便需要时恢复） -->
 
@@ -325,6 +331,11 @@
     const PDF_FONT_SCALE_FACTOR = 1.5;
     // 导出时的坐标微调（以 canvas 像素为单位，dy 负值向上移动）
     const ADJUST_COORDS = { dx1: 0, dx2: 0, dx3: 0, dx4: 0, dy: -4 };
+    // 图片导出：坐标仍按 1000px 宽参考画布计算，只裁出粗黑外框内的完整表格。
+    const IMAGE_EXPORT_REF_CANVAS = { width: 1000, height: 708 };
+    const IMAGE_EXPORT_CROP = { x: 59, y: 63, width: 879, height: 422 };
+    const IMAGE_EXPORT_RENDER_SCALE = 4.0;
+    const IMAGE_EXPORT_OUTPUT_SCALE = 1.0;
     // 导出时额外增加的字号（以 px 为单位）——可动态调整
     let FONT_SIZE_DELTA = 2;
     // 坐标冻结标记（冻结后不会被估算覆盖）
@@ -1602,6 +1613,12 @@
         amtInput.style.width = '100%';
         amtInput.dataset.field = 'amount';
         tdAmount.appendChild(amtInput);
+        [nameInput, bankInput, accInput, amtInput].forEach(input => {
+          input.addEventListener('input', () => {
+            recalcTotalFromTable();
+            scheduleExportPreview(250);
+          });
+        });
         // 操作列：删除按钮
         const tdAction = document.createElement('td');
         tdAction.style.textAlign = 'center';
@@ -1637,72 +1654,46 @@
       drawOverlayFromTable();
     }
 
-    // 在预览 canvas 上绘制表格文字覆盖，使用用户在输入框中的坐标
+    let previewRenderTimer = null;
+    let previewRenderToken = 0;
+
+    // 预览与导出共用同一条渲染/裁剪管线，保证所见即所得。
     function drawOverlayFromTable() {
+      scheduleExportPreview();
+    }
+
+    function scheduleExportPreview(delay = 0) {
+      if (previewRenderTimer) window.clearTimeout(previewRenderTimer);
+      previewRenderTimer = window.setTimeout(() => {
+        previewRenderTimer = null;
+        renderExportPreview().catch((e) => {
+          console.warn('renderExportPreview failed:', e);
+          const hint = document.getElementById('coordHint');
+          if (hint) hint.textContent = '预览刷新失败：' + (e && e.message ? e.message : String(e));
+        });
+      }, delay);
+    }
+
+    async function renderExportPreview() {
       const canvas = document.getElementById('pdfCanvas');
-      if (!canvas || canvas.width === 0) return;
+      if (!canvas) return;
+      const token = ++previewRenderToken;
+      const records = getRecordsFromTable() || [];
+      const filled = await createFilledTemplateCanvas(records);
+      if (token !== previewRenderToken) return;
+
+      const cropped = cropCanvasToExportArea(filled.canvas, filled.scaleForOff);
+      canvas.width = cropped.width;
+      canvas.height = cropped.height;
+      canvas.style.display = 'block';
+      canvas.style.width = IMAGE_EXPORT_CROP.width + 'px';
+      canvas.style.height = 'auto';
+      canvas.style.maxWidth = '100%';
+      canvas.style.boxSizing = 'border-box';
+
       const ctx = canvas.getContext('2d');
-      // 使用固定坐标，先恢复基础模板画面（若保存了基础图像数据）
-      if (window.__baseCanvasImageData && window.__baseCanvasImageData.width === canvas.width && window.__baseCanvasImageData.height === canvas.height) {
-        ctx.putImageData(window.__baseCanvasImageData, 0, 0);
-      } else {
-        // 若没有保存基础图像，保留现有 canvas 内容（不要清空，否则会将模板擦除）
-        // 不执行 clearRect 保持模板显示（如果 renderPdfPreview 尚未保存图像，预览仍可见）
-      }
-      const rows = Array.from(document.querySelectorAll('#resultTable tbody tr'));
-      // 若存在保存的基础 canvas 大小，则按基础尺寸的比例缩放固定坐标，保证不同显示宽度下位置稳定
-      const baseSize = window.__baseCanvasSize || { width: canvas.width, height: canvas.height };
-      const scaleX = canvas.width / (baseSize.width || canvas.width);
-      const scaleY = canvas.height / (baseSize.height || canvas.height);
-      const col1X = Math.round(FIXED_COORDS.col1 * scaleX);
-      const col2X = Math.round(FIXED_COORDS.col2 * scaleX);
-      const col3X = Math.round(FIXED_COORDS.col3 * scaleX);
-      const col4X = Math.round(FIXED_COORDS.col4 * scaleX);
-      const startYCanvas = Math.round(FIXED_COORDS.startY * scaleY);
-      const rowHeightCanvas = Math.round(FIXED_COORDS.rowH * scaleY);
-      const symbolX = Math.round(SYMBOL_X_CANVAS * scaleX);
-      // draw overlay
-      ctx.save();
-      ctx.fillStyle = 'rgba(0,0,0,0.95)';
-      // 使预览字体与导出字体一致：使用 canvas 相对于基础模板的横向缩放乘以 PDF 导出缩放因子
-      const baseSizeForPreview = window.__baseCanvasSize || { width: canvas.width, height: canvas.height };
-      const previewScaleX = canvas.width / (baseSizeForPreview.width || canvas.width);
-      const boldFontSize = Math.max(8, Math.round(BASE_BOLD_FONT_SIZE * previewScaleX * PDF_FONT_SCALE_FACTOR) + FONT_SIZE_DELTA);
-      const regFontSize = Math.max(8, Math.round(BASE_REGULAR_FONT_SIZE * previewScaleX * PDF_FONT_SCALE_FACTOR) + FONT_SIZE_DELTA);
-      for (let i = 0; i < rows.length; i++) {
-        const tr = rows[i];
-        const name = (tr.querySelector('input[data-field="name"]') || { value: '' }).value || '';
-        const bank = (tr.querySelector('input[data-field="bank"]') || { value: '' }).value || '';
-        const acc = (tr.querySelector('input[data-field="account"]') || { value: '' }).value || '';
-        const amtRaw = (tr.querySelector('input[data-field="amount"]') || { value: '' }).value || '';
-        const y = startYCanvas + i * rowHeightCanvas;
-        // 姓名/银行/账号加粗显示（加粗），字体大小按比例
-        ctx.font = 'bold ' + boldFontSize + 'px SimSun, "Microsoft Yahei", serif';
-        ctx.fillText(name, col1X, y);
-        ctx.fillText(bank, col2X, y);
-        ctx.fillText(acc, col3X, y);
-        // 金额分开放置：符号固定，数字右对齐到 col4X（金额常规字体）
-        const amtText = String(amtRaw || '').replace('￥', '').trim();
-        ctx.font = regFontSize + 'px SimSun, "Microsoft Yahei", serif';
-        ctx.fillText('￥', symbolX, y);
-        ctx.font = regFontSize + 'px Calibri, "Microsoft Yahei", serif';
-        const metrics = ctx.measureText(amtText);
-        const numericX = col4X - metrics.width;
-        ctx.fillText(amtText, numericX, y);
-      }
-      // 绘制总金额到黄色框位置（固定）
-      const totalText = document.getElementById('totalBox').textContent || '￥0.00';
-      // 恢复底色不覆盖黄色框显示（在预览上直接绘制）
-      // 总额使用与行相同的字体缩放规则（保证预览与导出一致）
-      const totalFontSizePreview = Math.max(10, Math.round(BASE_BOLD_FONT_SIZE * previewScaleX * PDF_FONT_SCALE_FACTOR) + FONT_SIZE_DELTA);
-      ctx.font = 'bold ' + totalFontSizePreview + 'px SimSun, "Microsoft Yahei", serif';
-      ctx.fillStyle = 'rgba(0,0,0,0.95)';
-      ctx.fillText('￥', SYMBOL_X_CANVAS, TOTAL_Y_CANVAS);
-      ctx.font = (Math.max(10, Math.round(BASE_REGULAR_FONT_SIZE * previewScaleX * PDF_FONT_SCALE_FACTOR) + FONT_SIZE_DELTA)) + 'px Calibri, "Microsoft Yahei", serif';
-      const totalNum = String(totalText || '').replace('￥', '').trim();
-      const totalMetrics = ctx.measureText(totalNum);
-      ctx.fillText(totalNum, TOTAL_X_CANVAS - totalMetrics.width, TOTAL_Y_CANVAS);
-      ctx.restore();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(cropped, 0, 0);
     }
 
     function recalcTotalFromTable() {
@@ -1733,6 +1724,174 @@
         const amount = parseAmountToNumber(String(amountRaw).replace(/￥/g, ''));
         return { name, bank, account, amountRaw, amount };
       });
+    }
+
+    function getAmountTextForCanvas(record) {
+      const raw = String(record && record.amountRaw != null ? record.amountRaw : '').trim();
+      if (!raw) return '';
+      return formatAmountDisplay(parseAmountToNumber(raw)).replace('￥', '').trim();
+    }
+
+    async function createFilledTemplateCanvas(records, options = {}) {
+      if (!localTemplateBlob) {
+        await ensureLocalTemplateLoaded();
+      }
+      if (!localTemplateBlob) {
+        throw new Error('请先加载本地模板。');
+      }
+
+      await ensurePdfJsLoaded();
+
+      const refCanvas = options.refCanvas || IMAGE_EXPORT_REF_CANVAS;
+      const renderScale = options.renderScale || IMAGE_EXPORT_RENDER_SCALE;
+      const arrayBufferTpl = await localTemplateBlob.arrayBuffer();
+      const loadingTaskTpl = pdfjsLib.getDocument({ data: arrayBufferTpl });
+      const pdfTpl = await loadingTaskTpl.promise;
+      const pageTpl = await pdfTpl.getPage(1);
+      const viewportHi = pageTpl.getViewport({ scale: renderScale });
+      const off = document.createElement('canvas');
+      off.width = Math.round(viewportHi.width);
+      off.height = Math.round(viewportHi.height);
+      const offCtx = off.getContext('2d');
+      await pageTpl.render({ canvasContext: offCtx, viewport: viewportHi }).promise;
+
+      const scaleForOff = viewportHi.width / (refCanvas.width || viewportHi.width);
+      const boldSize = Math.max(8, Math.round(BASE_BOLD_FONT_SIZE * scaleForOff * PDF_FONT_SCALE_FACTOR) + FONT_SIZE_DELTA);
+      const regSize = Math.max(8, Math.round(BASE_REGULAR_FONT_SIZE * scaleForOff * PDF_FONT_SCALE_FACTOR) + FONT_SIZE_DELTA);
+
+      offCtx.fillStyle = 'rgba(0,0,0,0.95)';
+      for (let i = 0; i < records.length; i++) {
+        const r = records[i];
+        const y = (FIXED_COORDS.startY + ADJUST_COORDS.dy + i * FIXED_COORDS.rowH) * scaleForOff;
+        offCtx.font = 'bold ' + boldSize + 'px SimSun, "Microsoft Yahei", serif';
+        offCtx.fillText(r.name || '', (FIXED_COORDS.col1 + ADJUST_COORDS.dx1) * scaleForOff, y);
+        offCtx.fillText(r.bank || '', (FIXED_COORDS.col2 + ADJUST_COORDS.dx2) * scaleForOff, y);
+        offCtx.fillText(r.account || '', (FIXED_COORDS.col3 + ADJUST_COORDS.dx3) * scaleForOff, y);
+
+        const amtText = getAmountTextForCanvas(r);
+        offCtx.font = 'bold ' + boldSize + 'px SimSun, "Microsoft Yahei", serif';
+        offCtx.fillText('￥', (SYMBOL_X_CANVAS + ADJUST_COORDS.dx4) * scaleForOff, y);
+        offCtx.font = regSize + 'px Calibri, "Microsoft Yahei", serif';
+        const metrics = offCtx.measureText(amtText);
+        const numericX = (FIXED_COORDS.col4 + ADJUST_COORDS.dx4) * scaleForOff - metrics.width;
+        offCtx.fillText(amtText, numericX, y);
+      }
+
+      const totalText = document.getElementById('totalBox').textContent || '￥0.00';
+      const totalNum = String(totalText).replace('￥', '').trim();
+      offCtx.font = 'bold ' + boldSize + 'px SimSun, "Microsoft Yahei", serif';
+      offCtx.fillText('￥', SYMBOL_X_CANVAS * scaleForOff, TOTAL_Y_CANVAS * scaleForOff);
+      offCtx.font = regSize + 'px Calibri, "Microsoft Yahei", serif';
+      const totalMetrics = offCtx.measureText(totalNum);
+      offCtx.fillText(totalNum, TOTAL_X_CANVAS * scaleForOff - totalMetrics.width, TOTAL_Y_CANVAS * scaleForOff);
+
+      return { canvas: off, scaleForOff };
+    }
+
+    function cropCanvasToExportArea(sourceCanvas, scaleForOff) {
+      const crop = IMAGE_EXPORT_CROP;
+      const outputScale = IMAGE_EXPORT_OUTPUT_SCALE;
+      const sx = Math.max(0, Math.round(crop.x * scaleForOff));
+      const sy = Math.max(0, Math.round(crop.y * scaleForOff));
+      const sw = Math.min(sourceCanvas.width - sx, Math.round(crop.width * scaleForOff));
+      const sh = Math.min(sourceCanvas.height - sy, Math.round(crop.height * scaleForOff));
+      const out = document.createElement('canvas');
+      out.width = Math.round(crop.width * outputScale);
+      out.height = Math.round(crop.height * outputScale);
+      const outCtx = out.getContext('2d');
+      outCtx.imageSmoothingEnabled = true;
+      outCtx.imageSmoothingQuality = 'high';
+      outCtx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, out.width, out.height);
+      return out;
+    }
+
+    function canvasForMimeType(canvas, mimeType) {
+      if (mimeType !== 'image/jpeg') return canvas;
+      const out = document.createElement('canvas');
+      out.width = canvas.width;
+      out.height = canvas.height;
+      const ctx = out.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, out.width, out.height);
+      ctx.drawImage(canvas, 0, 0);
+      return out;
+    }
+
+    function canvasToBlobAsync(canvas, mimeType, quality) {
+      return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error('图片生成失败。'));
+        }, mimeType, quality);
+      });
+    }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    async function copyTextToClipboard(text) {
+      if (!text) return false;
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (e) {
+          console.warn('Clipboard API copy failed:', e);
+        }
+      }
+
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        textarea.style.top = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const ok = document.execCommand('copy');
+        textarea.remove();
+        return ok;
+      } catch (e) {
+        console.warn('Fallback clipboard copy failed:', e);
+        return false;
+      }
+    }
+
+    async function exportFilledTableImage(format) {
+      const records = getRecordsFromTable() || [];
+      if (!records.length) {
+        alert('请先点击“解析并显示”，确认表格内容后再导出图片。');
+        return;
+      }
+
+      const isJpg = String(format).toLowerCase() === 'jpg';
+      const mimeType = isJpg ? 'image/jpeg' : 'image/png';
+      const extension = isJpg ? 'jpg' : 'png';
+      const hint = document.getElementById('coordHint');
+
+      try {
+        if (hint) hint.textContent = '正在生成表格图片...';
+        const filled = await createFilledTemplateCanvas(records);
+        const cropped = cropCanvasToExportArea(filled.canvas, filled.scaleForOff);
+        const outputCanvas = canvasForMimeType(cropped, mimeType);
+        const blob = await canvasToBlobAsync(outputCanvas, mimeType, isJpg ? 0.95 : undefined);
+        downloadBlob(blob, 'filled_rmb_accounts_table.' + extension);
+        if (hint) hint.textContent = '已导出表格 ' + extension.toUpperCase() + ' 图片。';
+      } catch (e) {
+        console.error('导出表格图片失败：', e);
+        alert('导出表格图片失败：' + (e && e.message ? e.message : String(e)));
+        if (hint) hint.textContent = '导出表格图片失败：' + (e && e.message ? e.message : String(e));
+      }
     }
 
     (function(){ const el = document.getElementById('parseBtn'); if (el) el.addEventListener('click', () => {
@@ -1809,10 +1968,11 @@
       const it = document.getElementById('inputText'); if (it) it.value = '';
       const tb = document.querySelector('#resultTable tbody'); if (tb) tb.innerHTML = '';
       const tbx = document.getElementById('totalBox'); if (tbx) tbx.textContent = '￥0.00';
+      drawOverlayFromTable();
     }); })();
 
     // “更新表格并计算总额”按钮
-    (function(){ const el = document.getElementById('applyEditsBtn'); if (el) el.addEventListener('click', () => {
+    (function(){ const el = document.getElementById('applyEditsBtn'); if (el) el.addEventListener('click', async () => {
       // 遍历表格，把用户修改的值规范化（账号格式/金额格式化）
       const rows = Array.from(document.querySelectorAll('#resultTable tbody tr'));
       for (const tr of rows) {
@@ -1839,14 +1999,13 @@
           dbg.style.display = 'block';
           dbg.textContent = tpl;
         }
-        // 复制模板到剪贴板（若支持）
-        try {
-          if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(tpl).then(() => {
-              try { document.getElementById('coordHint').textContent = '模板已复制到剪贴板。'; } catch (e) {}
-            }).catch(() => {});
-          }
-        } catch (e) {}
+        const copied = await copyTextToClipboard(tpl);
+        const hint = document.getElementById('coordHint');
+        if (hint) {
+          hint.textContent = copied
+            ? '模板已自动复制到剪贴板。'
+            : '模板已生成，但浏览器拒绝自动复制，请从下方文字模板手动复制。';
+        }
       } catch (e) { console.warn('update template after applyEdits failed', e); }
     }); })();
 
@@ -1881,25 +2040,42 @@
     // PDF 上传占位（后续将使用 pdf-lib 填充模板）
     // 移除上传交互；改为从同目录加载模板文件（GQC RMB账户表格 (1).pdf）
     let localTemplateBlob = null;
+    async function ensureLocalTemplateLoaded() {
+      if (localTemplateBlob) return localTemplateBlob;
+      const resp = await fetch('GQC RMB账户表格 (1).pdf');
+      if (!resp.ok) throw new Error('无法加载本地模板: ' + resp.status);
+      const ab = await resp.arrayBuffer();
+      localTemplateBlob = new Blob([ab], { type: 'application/pdf' });
+      return localTemplateBlob;
+    }
+
     async function loadLocalTemplate() {
       try {
-        const resp = await fetch('GQC RMB账户表格 (1).pdf');
-        if (!resp.ok) throw new Error('无法加载本地模板: ' + resp.status);
-        const ab = await resp.arrayBuffer();
-        localTemplateBlob = new Blob([ab], { type: 'application/pdf' });
-        await renderPdfPreview(localTemplateBlob);
-        document.getElementById('coordHint').textContent = '已加载本地模板，已渲染到预览。';
+        const status = document.getElementById('templateLoadStatus');
+        if (status) status.textContent = '自动加载中…';
+        await ensureLocalTemplateLoaded();
+        await renderExportPreview();
+        if (status) status.textContent = '已加载';
+        document.getElementById('coordHint').textContent = '已加载本地模板，预览与导出的图片一致。';
       } catch (e) {
         console.error(e);
+        const status = document.getElementById('templateLoadStatus');
+        if (status) status.textContent = '加载失败';
         document.getElementById('coordHint').textContent = '加载本地模板失败：' + e.message;
       }
     }
     (function(){ const el = document.getElementById('loadLocalBtn'); if (el) el.addEventListener('click', loadLocalTemplate); })();
+    window.addEventListener('load', () => {
+      loadLocalTemplate();
+    });
 
     // PDF 填充并下载（使用 pdf-lib）
     // 依赖 CDN: PDFLib (pdf-lib)
     async function fillPdfAndDownload() {
-      const inputFile = localTemplateBlob;
+      let inputFile = localTemplateBlob;
+      if (!inputFile) {
+        inputFile = await ensureLocalTemplateLoaded();
+      }
       // 读取表格内当前解析结果
       const rows = Array.from(document.querySelectorAll('#resultTable tbody tr'));
       const records = rows.map(tr => {
@@ -2010,7 +2186,8 @@
       // 并将这些固定坐标按 PDF 页面尺寸比例映射到 PDF 点坐标。
       // 参考基础 canvas 宽高来自渲染模板时保存的 window.__baseCanvasSize（若存在）。
       // 为了生成与浏览器无关的 PDF，支持“PDF 定位模式”——使用固定参考画布尺寸（与模板设计一致）
-      const usePdfMode = !!(document.getElementById('pdfModeCheckbox') && document.getElementById('pdfModeCheckbox').checked);
+      const pdfModeCheckbox = document.getElementById('pdfModeCheckbox');
+      const usePdfMode = pdfModeCheckbox ? !!pdfModeCheckbox.checked : true;
       const DEFAULT_REF_CANVAS = { width: 1000, height: 1414 }; // 参考 canvas（模板设计参考像素）
       let refCanvasWidth = DEFAULT_REF_CANVAS.width;
       let refCanvasHeight = DEFAULT_REF_CANVAS.height;
@@ -2207,6 +2384,12 @@
       await ensurePdfLibLoaded();
       await fillPdfAndDownload();
     }); })();
+    (function(){ const el = document.getElementById('exportPngBtn'); if (el) el.addEventListener('click', async () => {
+      await exportFilledTableImage('png');
+    }); })();
+    (function(){ const el = document.getElementById('exportJpgBtn'); if (el) el.addEventListener('click', async () => {
+      await exportFilledTableImage('jpg');
+    }); })();
 
     // ---------------------
     // OCR 集成（PDF.js + Tesseract.js）
@@ -2293,7 +2476,7 @@
 
       // 将识别文本放入输入框并触发解析（保留原始文本到 preview 供编辑）
       document.getElementById('inputText').value = text;
-      document.getElementById('parseBtn').click();
+      renderResultsEditable(parseInputToRecords(text));
       alert('OCR 完成，识别文本已填入并开始解析。请在下方的可编辑表格中校正结果后再导出。');
     }); })();
     // 渲染 PDF 预览到 canvas，便于用户微调坐标
@@ -2448,10 +2631,14 @@
   let currentInputTab = 'ai';
   function switchInputTab(tab) {
     currentInputTab = tab;
-    document.getElementById('tabAiBtn').classList.toggle('active', tab === 'ai');
-    document.getElementById('tabRuleBtn').classList.toggle('active', tab === 'rule');
-    document.getElementById('aiSettingsRow').style.display = tab === 'ai' ? 'flex' : 'none';
-    document.getElementById('aiActionRow').style.display = tab === 'ai' ? 'flex' : 'none';
+    const tabAiBtn = document.getElementById('tabAiBtn');
+    const tabRuleBtn = document.getElementById('tabRuleBtn');
+    const settingsRow = document.getElementById('aiSettingsRow');
+    const actionRow = document.getElementById('aiActionRow');
+    if (tabAiBtn) tabAiBtn.classList.toggle('active', tab === 'ai');
+    if (tabRuleBtn) tabRuleBtn.classList.toggle('active', tab === 'rule');
+    if (settingsRow) settingsRow.style.display = tab === 'ai' ? 'flex' : 'none';
+    if (actionRow) actionRow.style.display = tab === 'ai' ? 'flex' : 'none';
   }
   // 默认显示 AI tab
   switchInputTab('ai');
@@ -2662,6 +2849,7 @@ ${rawText}
       inputs.forEach(inp => {
         rec[inp.dataset.field] = inp.value.trim();
       });
+      rec.account = formatAccountNumber(rec.account || '');
       // amountRaw = 用户看到的原始格式（如 "500万"），amount = 数字用于计算
       rec.amountRaw = String(rec.amount || '').trim();
       rec.amount = parseFloat(String(rec.amount || '').replace(/[￥,，,\s]/g, '')) || 0;
