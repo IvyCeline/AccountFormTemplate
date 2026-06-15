@@ -335,7 +335,8 @@
     const IMAGE_EXPORT_REF_CANVAS = { width: 1000, height: 708 };
     const IMAGE_EXPORT_CROP = { x: 59, y: 63, width: 879, height: 422 };
     const IMAGE_EXPORT_RENDER_SCALE = 4.0;
-    const IMAGE_EXPORT_OUTPUT_SCALE = 1.0;
+    // 导出图片使用 3 倍像素密度：显示尺寸不变，但 PNG/JPG 文字和线条更清晰。
+    const IMAGE_EXPORT_OUTPUT_SCALE = 3.0;
     // 导出时额外增加的字号（以 px 为单位）——可动态调整
     let FONT_SIZE_DELTA = 2;
     // 坐标冻结标记（冻结后不会被估算覆盖）
