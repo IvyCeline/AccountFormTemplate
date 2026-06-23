@@ -663,9 +663,67 @@
 
     // 格式化账号：去空格后每4位加空格
     function formatAccountNumber(raw) {
-      const digits = (raw || '').toString().replace(/\s+/g, '');
+      const digits = (raw || '').toString().replace(/\D/g, '');
       if (!digits) return '';
       return digits.replace(/(.{4})/g, '$1 ').trim();
+    }
+
+    function accountDigits(raw) {
+      return String(raw || '').replace(/\D/g, '');
+    }
+
+    function extractExactAccountsFromText(rawText) {
+      const text = String(rawText || '');
+      const accountRegex = /(?:\d[\s\-]?){16,22}/g;
+      const accounts = [];
+      const seen = new Set();
+      let match;
+      while ((match = accountRegex.exec(text)) !== null) {
+        const digits = accountDigits(match[0]);
+        if (digits.length < 16 || digits.length > 22) continue;
+        if (/^1\d{10}$/.test(digits)) continue;
+        const key = digits + '@' + match.index;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        accounts.push({
+          digits,
+          raw: match[0],
+          formatted: formatAccountNumber(digits),
+          index: match.index
+        });
+      }
+      return accounts;
+    }
+
+    function reconcileAiAccountsWithSource(records, rawText) {
+      const sourceAccounts = extractExactAccountsFromText(rawText);
+      if (!sourceAccounts.length) {
+        return records.map(record => ({
+          ...record,
+          account: formatAccountNumber(record.account || '')
+        }));
+      }
+
+      return records.map((record, index) => {
+        const aiDigits = accountDigits(record.account);
+        const exactMatch = aiDigits
+          ? sourceAccounts.find(source => source.digits === aiDigits)
+          : null;
+        const orderedMatch = sourceAccounts[index] || null;
+        const source = exactMatch || orderedMatch;
+        if (!source) {
+          return { ...record, account: formatAccountNumber(aiDigits) };
+        }
+
+        const wasCorrected = !!aiDigits && aiDigits !== source.digits;
+        return {
+          ...record,
+          account: source.formatted,
+          accountCorrectedFromSource: wasCorrected,
+          accountSourceRaw: source.raw,
+          aiConfident: wasCorrected ? false : record.aiConfident
+        };
+      });
     }
 
 
@@ -2809,6 +2867,11 @@ ${rawText}
       // 账号
       const tdAcc = document.createElement('td');
       tdAcc.innerHTML = `<input type="text" data-idx="${i}" data-field="account" value="${r.account || ''}" />`;
+      if (r.accountCorrectedFromSource) {
+        tdAcc.style.background = '#ecfdf5';
+        const accountInput = tdAcc.querySelector('input');
+        if (accountInput) accountInput.title = '账号已按原始输入精确修正：' + (r.accountSourceRaw || r.account || '');
+      }
       // 置信度标签
       const tdSrc = document.createElement('td');
       tdSrc.style.textAlign = 'center';
@@ -2914,7 +2977,7 @@ ${rawText}
     try {
       setAiLoading(true, 'AI 正在分析文本内容…');
       const aiRecords = await runAiParse(rawText, feedback);
-      const internal = convertAiRecordsToInternal(aiRecords);
+      const internal = reconcileAiAccountsWithSource(convertAiRecordsToInternal(aiRecords), rawText);
       setAiLoading(false);
       showAiReviewModal(internal, rawText);
     } catch(err) {
