@@ -756,10 +756,29 @@
       const num = Number(n || 0);
       return '￥' + num.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     }
+
+    function getRecordAmountValue(record) {
+      if (!record) return 0;
+      const parsedRaw = parseAmountToNumber(record.amountRaw);
+      const parsedAmount = parseAmountToNumber(record.amount);
+      return Number(parsedRaw || parsedAmount || 0);
+    }
+
+    function sortRecordsByAmountDesc(records) {
+      if (!Array.isArray(records)) return [];
+      return records
+        .map((record, index) => ({ record, index }))
+        .sort((a, b) => {
+          const diff = getRecordAmountValue(b.record) - getRecordAmountValue(a.record);
+          return diff || (a.index - b.index);
+        })
+        .map(item => item.record);
+    }
     
     // 构建给客户的模板文本（根据解析结果填充多笔账户信息）
     function buildCustomerTemplate(records) {
       if (!Array.isArray(records)) records = [];
+      records = sortRecordsByAmountDesc(records);
       const lines = [];
       lines.push('尊敬的客户，');
       lines.push('');
@@ -1635,6 +1654,7 @@
 
     // 把解析结果渲染为可编辑表格，用户可在表格中修改再点击“更新表格并计算总额”
     function renderResultsEditable(records) {
+      records = sortRecordsByAmountDesc(records || []);
       const tbody = document.querySelector('#resultTable tbody');
       tbody.innerHTML = '';
       for (const [idx, r] of records.entries()) {
@@ -1792,6 +1812,7 @@
     }
 
     async function createFilledTemplateCanvas(records, options = {}) {
+      records = sortRecordsByAmountDesc(records || []);
       if (!localTemplateBlob) {
         await ensureLocalTemplateLoaded();
       }
@@ -1927,9 +1948,9 @@
     }
 
     async function exportFilledTableImage(format) {
-      const records = getRecordsFromTable() || [];
+      const records = sortRecordsByAmountDesc(getRecordsFromTable() || []);
       if (!records.length) {
-        alert('请先点击“解析并显示”，确认表格内容后再导出图片。');
+        alert('请先使用 AI 智能识别并审核，确认表格内容后再导出图片。');
         return;
       }
 
@@ -2048,11 +2069,14 @@
         if (bankInput && bankInput.value) bankInput.value = normalizeBankName(bankInput.value);
       }
       recalcTotalFromTable();
-      try { drawOverlayFromTable(); } catch (e) { console.warn('drawOverlayFromTable failed after applyEdits', e); }
+      let sortedRecs = sortRecordsByAmountDesc(getRecordsFromTable() || []);
+      renderResultsEditable(sortedRecs);
       // 同步更新文字模板显示（优先使用手工编辑后的表格数据）
       try {
-        const recs = getRecordsFromTable() || parseInputToRecords((document.getElementById('inputText')||{value:''}).value || '');
-        const tpl = buildCustomerTemplate(recs || []);
+        if (!sortedRecs.length) {
+          sortedRecs = parseInputToRecords((document.getElementById('inputText')||{value:''}).value || '');
+        }
+        const tpl = buildCustomerTemplate(sortedRecs || []);
         const dbg = document.getElementById('debugJson');
         if (dbg) {
           dbg.style.display = 'block';
@@ -2137,7 +2161,7 @@
       }
       // 读取表格内当前解析结果
       const rows = Array.from(document.querySelectorAll('#resultTable tbody tr'));
-      const records = rows.map(tr => {
+      let records = rows.map(tr => {
         // 从可编辑输入中读取值（兼容输入框）
         const nameEl = tr.querySelector('input[data-field="name"]');
         const bankEl = tr.querySelector('input[data-field="bank"]');
@@ -2149,6 +2173,7 @@
         const amount = amtEl ? amtEl.value.trim() : (tr.children[3] ? tr.children[3].textContent.trim() : '');
         return { name, bank, account, amount };
       });
+      records = sortRecordsByAmountDesc(records);
 
       let pdfBytes;
       if (inputFile) {
@@ -2835,6 +2860,7 @@ ${rawText}
   let _pendingRawText = '';
 
   function showAiReviewModal(records, rawText) {
+    records = sortRecordsByAmountDesc(records || []);
     _pendingAiRecords = records;
     _pendingRawText = rawText;
 
