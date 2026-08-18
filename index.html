@@ -199,9 +199,9 @@
       <input type="password" id="groqApiKey" placeholder="gsk_..." style="min-width:240px;" />
       <label style="color:#5b21b6; font-size:13px;">模型</label>
       <select id="groqModelSelect">
-        <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile（免费·最强）</option>
-        <option value="llama-3.1-8b-instant" selected>llama-3.1-8b-instant（免费·最快）</option>
-        <option value="meta-llama/llama-4-scout-17b-16e-instruct">llama-4-scout-17b-16e-instruct（预览·快）</option>
+        <option value="openai/gpt-oss-120b" selected>openai/gpt-oss-120b（推荐·高准确）</option>
+        <option value="openai/gpt-oss-20b">openai/gpt-oss-20b（快速）</option>
+        <option value="qwen/qwen3.6-27b">qwen/qwen3.6-27b（备用·中文强）</option>
       </select>
       <button id="saveApiKeyBtn" class="secondary" style="font-size:13px; padding:6px 12px;">保存 Key</button>
       <span id="aiStatusMsg"></span>
@@ -2674,12 +2674,29 @@
   // ============================================================
 
   // Groq API 配置（从 localStorage 持久化）
+  const GROQ_DEFAULT_MODEL = 'openai/gpt-oss-120b';
+  const GROQ_MODEL_REPLACEMENTS = {
+    'llama-3.3-70b-versatile': 'openai/gpt-oss-120b',
+    'llama-3.1-8b-instant': 'openai/gpt-oss-20b',
+    'meta-llama/llama-4-scout-17b-16e-instruct': 'openai/gpt-oss-120b',
+    'qwen/qwen3-32b': 'openai/gpt-oss-120b'
+  };
+
+  function normalizeGroqModel(model) {
+    const value = String(model || '').trim();
+    return GROQ_MODEL_REPLACEMENTS[value] || value || GROQ_DEFAULT_MODEL;
+  }
+
   function getGroqConfig() {
     try {
       const raw = localStorage.getItem('groq_config');
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const cfg = JSON.parse(raw);
+        cfg.model = normalizeGroqModel(cfg.model);
+        return cfg;
+      }
     } catch(e) {}
-    return { apiKey: '', model: 'llama-3.1-8b-instant' };
+    return { apiKey: '', model: GROQ_DEFAULT_MODEL };
   }
   function saveGroqConfig(cfg) {
     try { localStorage.setItem('groq_config', JSON.stringify(cfg)); } catch(e) {}
@@ -2694,6 +2711,11 @@
     const modelSelect = document.getElementById('groqModelSelect');
     const saveBtn = document.getElementById('saveApiKeyBtn');
     if (keyInput && storedCfg && storedCfg.apiKey) keyInput.value = storedCfg.apiKey;
+    if (storedCfg && storedCfg.model) {
+      const normalizedModel = normalizeGroqModel(storedCfg.model);
+      if (normalizedModel !== storedCfg.model) saveGroqConfig({ ...storedCfg, model: normalizedModel });
+      storedCfg.model = normalizedModel;
+    }
     if (modelSelect && storedCfg && storedCfg.model) {
       for (let i = 0; i < modelSelect.options.length; i++) {
         if (modelSelect.options[i].value === storedCfg.model) { modelSelect.selectedIndex = i; break; }
@@ -2701,7 +2723,7 @@
     }
     if (saveBtn) saveBtn.addEventListener('click', () => {
       const key = (keyInput || {}).value || '';
-      const model = (modelSelect || {}).value || 'llama-3.1-8b-instant';
+      const model = normalizeGroqModel((modelSelect || {}).value);
       saveGroqConfig({ apiKey: key, model });
       const msg = document.getElementById('aiStatusMsg');
       if (msg) {
@@ -2733,7 +2755,7 @@
     if (!cfg.apiKey || !cfg.apiKey.trim()) {
       throw new Error('请先在顶部输入并保存 Groq API Key');
     }
-    const model = cfg.model || 'llama-3.1-8b-instant';
+    const model = normalizeGroqModel(cfg.model);
 
     const SYSTEM_PROMPT = `你是一个专门从混杂文本中提取银行汇款账户信息的人工智能助手。
 
