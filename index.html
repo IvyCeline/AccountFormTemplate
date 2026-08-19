@@ -75,6 +75,13 @@
       box-shadow: 0 2px 0 rgba(91,33,182,0.2) !important;
     }
     .btn-ai:hover { opacity: 0.9; }
+    .btn-local-parse {
+      background: #eef4fb !important;
+      color: #0b66c3 !important;
+      border: 1px solid #bfdbfe !important;
+      box-shadow: 0 2px 0 rgba(11,102,195,0.08) !important;
+    }
+    .btn-local-parse:hover { background: #e0f2fe !important; }
     #aiStatusMsg { font-size: 13px; color: #6d28d9; min-height: 20px; }
     /* AI 审核弹窗 */
     #aiReviewModal {
@@ -212,6 +219,9 @@
       <button id="aiParseBtn" class="btn-ai" style="padding:11px 20px;">
         🤖 AI 智能识别并审核
       </button>
+      <button id="localParseBtn" class="secondary btn-local-parse" style="padding:10px 16px;" title="不连接 API，使用网页内置规则识别后进入审核弹窗">
+        本地自动识别
+      </button>
       <button id="aiRerunBtn" class="btn-ai" style="padding:10px 16px; font-size:14px; display:none;" title="用当前输入框内容重新识别">
         🔄 重新识别
       </button>
@@ -224,8 +234,8 @@
   <div id="aiReviewModal">
     <div class="modal-header">
       <div>
-        <h2>🤖 AI 识别结果 — 请审核</h2>
-        <div class="subtitle">请核对每行数据，红色高亮字段为需要修改的内容，确认无误后点击「确认填入表格」</div>
+        <h2 id="aiReviewTitle">🤖 AI 识别结果 — 请审核</h2>
+        <div class="subtitle" id="aiReviewSubtitle">请核对每行数据，红色高亮字段为需要修改的内容，确认无误后点击「确认填入表格」</div>
       </div>
       <div style="display:flex; gap:8px; align-items:center;">
         <button id="aiCloseModalBtn" style="background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.4);color:#fff;padding:6px 12px;border-radius:6px;font-size:18px;cursor:pointer;line-height:1;">&times;</button>
@@ -233,7 +243,7 @@
     </div>
     <div class="modal-body">
       <!-- 用户反馈输入区 -->
-      <div style="margin-bottom:10px; display:flex; gap:8px; align-items:flex-start;">
+      <div id="aiFeedbackRow" style="margin-bottom:10px; display:flex; gap:8px; align-items:flex-start;">
         <div style="flex:1; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
           <span style="font-size:13px; color:#7c3aed; font-weight:600; white-space:nowrap;">💬 补充说明（可选）：</span>
           <input type="text" id="aiFeedbackInput" placeholder="例如：金额应该是 500万，不是 50万；第二个姓名的名字打错了一个字…"
@@ -279,7 +289,7 @@
   </div>
   <pre id="debugJson" style="width:90%; margin:12px; border:1px solid #ccc; padding:8px; display:none; white-space:pre-wrap; word-break:break-word; text-align:left;"></pre>
 
-  <div class="small">说明：粘贴账户文本后使用 AI 智能识别并审核，确认后可直接预览并导出 PDF/PNG/JPG。</div>
+  <div class="small">说明：粘贴账户文本后可使用 AI 智能识别，或在模型不可用时使用本地自动识别；确认审核后可直接预览并导出 PDF/PNG/JPG。</div>
 
   <table id="resultTable" aria-label="识别结果">
     <thead>
@@ -923,7 +933,9 @@
         for (let i = 0; i < matches.length; i++) {
           const start = i === 0 ? 0 : Math.floor((matches[i - 1].index + matches[i].index) / 2);
           const end = i === matches.length - 1 ? text.length : Math.floor((matches[i].index + matches[i + 1].index) / 2);
-          segments.push({ mm: matches[i], start, end });
+          const prevEnd = i === 0 ? 0 : matches[i - 1].index + matches[i - 1].raw.length;
+          const nextStart = i === matches.length - 1 ? text.length : matches[i + 1].index;
+          segments.push({ mm: matches[i], start, end, prevEnd, nextStart });
         }
 
         for (const seg of segments) {
@@ -1097,17 +1109,22 @@
           const amountCandidates = [];
           const amountRe = /(￥\s*[\d,]+(?:\.\d+)?(?:万|w)?|[\d,]{1,}(?:\.\d+)?(?:万|w)?|[\d.]+(?:万|w))/g;
           let am;
-          while ((am = amountRe.exec(ctx)) !== null) {
+          while ((am = amountRe.exec(ctxRaw)) !== null) {
             const cand = am[0].trim();
             const digitsOnly = cand.replace(/\D/g, '');
             if (digitsOnly.length >= 16) continue; // avoid capturing long account-like numbers
             // require at least 5 digits for plain-number amounts (avoid 4-digit falling back to part of account)
             if (!/[万w￥,]/i.test(cand) && digitsOnly.length < 5) continue;
-            amountCandidates.push({ txt: cand, index: am.index });
+            const absoluteIndex = seg.start + am.index;
+            const accountEnd = mm.index + mm.raw.length;
+            const isAfterCurrentAccount = absoluteIndex >= accountEnd && absoluteIndex < seg.nextStart;
+            const isBeforeCurrentAccount = absoluteIndex >= seg.prevEnd && absoluteIndex < mm.index;
+            const bucket = isAfterCurrentAccount ? 0 : (isBeforeCurrentAccount ? 1 : 2);
+            const distance = Math.abs(absoluteIndex - mm.index);
+            amountCandidates.push({ txt: cand, index: am.index, absoluteIndex, score: bucket * 1000000 + distance });
           }
           if (amountCandidates.length > 0) {
-            const localAccPos = mm.index - seg.start;
-            amountCandidates.sort((a,b) => Math.abs(a.index - localAccPos) - Math.abs(b.index - localAccPos));
+            amountCandidates.sort((a,b) => a.score - b.score);
             amountRaw = amountCandidates[0].txt;
           } else {
             // Also try to find amounts on adjacent lines in the full text (for cases where amount is on its own line)
@@ -2880,17 +2897,38 @@ ${rawText}
   // 显示 AI 审核弹窗
   let _pendingAiRecords = [];
   let _pendingRawText = '';
+  let _pendingReviewMode = 'ai';
+  let _aiParseRunId = 0;
 
-  function showAiReviewModal(records, rawText) {
+  function showAiReviewModal(records, rawText, options = {}) {
     records = sortRecordsByAmountDesc(records || []);
     _pendingAiRecords = records;
     _pendingRawText = rawText;
+    _pendingReviewMode = options.mode || (records.some(r => r && r.isAi) ? 'ai' : 'local');
+    const isLocalMode = _pendingReviewMode === 'local';
 
     const tbody = document.querySelector('#aiReviewTable tbody');
     tbody.innerHTML = '';
+    const title = document.getElementById('aiReviewTitle');
+    const subtitle = document.getElementById('aiReviewSubtitle');
+    const feedbackRow = document.getElementById('aiFeedbackRow');
+    const rerunInModalBtn = document.getElementById('aiRerunInModalBtn');
+    const feedbackInput = document.getElementById('aiFeedbackInput');
+    if (title) title.textContent = isLocalMode ? '本地自动识别结果 — 请审核' : '🤖 AI 识别结果 — 请审核';
+    if (subtitle) {
+      subtitle.textContent = isLocalMode
+        ? '本地规则不会连接 API，可能不够聪明；请逐行核对并直接修改后再确认填入表格。'
+        : '请核对每行数据，红色高亮字段为需要修改的内容，确认无误后点击「确认填入表格」';
+    }
+    if (feedbackRow) feedbackRow.style.display = isLocalMode ? 'none' : 'flex';
+    if (rerunInModalBtn) rerunInModalBtn.style.display = isLocalMode ? 'none' : 'inline-block';
+    if (feedbackInput && isLocalMode) feedbackInput.value = '';
 
     if (!records || records.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:20px; color:#888;">AI 未识别出任何账户信息，请检查输入内容后重试</td></tr>';
+      const emptyMsg = isLocalMode
+        ? '本地自动识别未找到可用账户信息，请检查输入内容，或手动新增行填写。'
+        : 'AI 未识别出任何账户信息，请检查输入内容后重试';
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:20px; color:#888;">${emptyMsg}</td></tr>`;
       document.getElementById('aiOverlay').style.display = 'block';
       document.getElementById('aiReviewModal').style.display = 'block';
       return;
@@ -2928,7 +2966,7 @@ ${rawText}
           ? '<span style="background:#dcfce7;color:#166534;padding:2px 6px;border-radius:8px;font-size:12px;font-weight:700;">AI ✓</span>'
           : '<span style="background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:8px;font-size:12px;font-weight:700;">AI ?</span>';
       } else {
-        tdSrc.innerHTML = '<span style="background:#e0f2fe;color:#0369a1;padding:2px 6px;border-radius:8px;font-size:12px;font-weight:700;">规则</span>';
+        tdSrc.innerHTML = '<span style="background:#e0f2fe;color:#0369a1;padding:2px 6px;border-radius:8px;font-size:12px;font-weight:700;">本地</span>';
       }
       // 高亮不自信字段
       if (!r.aiConfident) {
@@ -2957,6 +2995,7 @@ ${rawText}
     const records = [];
     rows.forEach(tr => {
       const inputs = tr.querySelectorAll('input');
+      if (!inputs.length) return;
       const rec = {};
       inputs.forEach(inp => {
         rec[inp.dataset.field] = inp.value.trim();
@@ -2964,8 +3003,9 @@ ${rawText}
       rec.account = formatAccountNumber(rec.account || '');
       // amountRaw = 用户看到的原始格式（如 "500万"），amount = 数字用于计算
       rec.amountRaw = String(rec.amount || '').trim();
-      rec.amount = parseFloat(String(rec.amount || '').replace(/[￥,，,\s]/g, '')) || 0;
-      rec.isAi = true;
+      rec.amount = parseAmountToNumber(rec.amountRaw);
+      rec.isAi = _pendingReviewMode !== 'local';
+      rec.aiConfident = rec.isAi;
       records.push(rec);
     });
     return records;
@@ -3013,6 +3053,40 @@ ${rawText}
     }
   }
 
+  function runLocalParse(rawText) {
+    const records = parseInputToRecords(rawText);
+    return sortRecordsByAmountDesc(records).map(record => ({
+      ...record,
+      account: formatAccountNumber(record.account || ''),
+      isAi: false,
+      aiConfident: false
+    }));
+  }
+
+  function triggerLocalParse() {
+    const rawText = (document.getElementById('inputText') || { value: '' }).value || '';
+    if (!rawText.trim()) {
+      alert('请先在文本框中输入待识别的内容');
+      return;
+    }
+    _aiParseRunId++;
+    setAiLoading(false);
+    const rerun = document.getElementById('aiRerunBtn');
+    if (rerun) rerun.style.display = 'none';
+    try {
+      const records = runLocalParse(rawText);
+      showAiReviewModal(records, rawText, { mode: 'local' });
+      const msg = document.getElementById('aiStatusMsg');
+      if (msg) {
+        msg.textContent = `✓ 本地自动识别 ${records.length} 条，请审核`;
+        setTimeout(() => { if (msg) msg.textContent = ''; }, 4000);
+      }
+    } catch (err) {
+      console.error('Local parse error:', err);
+      alert('本地自动识别失败：' + (err && err.message ? err.message : err));
+    }
+  }
+
   // 核心触发函数（被按钮和重识别调用）
   // feedback 可选：用户对上次识别结果的补充说明
   async function triggerAiParse(feedback) {
@@ -3021,17 +3095,22 @@ ${rawText}
       alert('请先在文本框中输入待识别的内容');
       return;
     }
+    const runId = ++_aiParseRunId;
     setAiLoading(true, '正在连接 Groq API…');
     try {
       setAiLoading(true, 'AI 正在分析文本内容…');
       const aiRecords = await runAiParse(rawText, feedback);
+      if (runId !== _aiParseRunId) return;
       const internal = reconcileAiAccountsWithSource(convertAiRecordsToInternal(aiRecords), rawText);
       setAiLoading(false);
-      showAiReviewModal(internal, rawText);
+      showAiReviewModal(internal, rawText, { mode: 'ai' });
     } catch(err) {
+      if (runId !== _aiParseRunId) return;
       setAiLoading(false);
       console.error('AI parse error:', err);
-      alert('AI 识别失败：' + err.message);
+      const msg = document.getElementById('aiStatusMsg');
+      if (msg) msg.textContent = 'AI 暂时不可用，可点击“本地自动识别”继续。';
+      alert('AI 识别失败：' + err.message + '\n\n可以点击旁边的“本地自动识别”继续处理。');
     }
   }
 
@@ -3039,6 +3118,9 @@ ${rawText}
   (function bindAiButtons() {
     const parseBtn = document.getElementById('aiParseBtn');
     if (parseBtn) parseBtn.addEventListener('click', triggerAiParse);
+
+    const localParseBtn = document.getElementById('localParseBtn');
+    if (localParseBtn) localParseBtn.addEventListener('click', triggerLocalParse);
 
     const rerunBtn = document.getElementById('aiRerunBtn');
     if (rerunBtn) rerunBtn.addEventListener('click', triggerAiParse);
